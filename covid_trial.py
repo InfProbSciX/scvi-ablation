@@ -16,7 +16,7 @@ import scvi
 data_dir = "data/COVID_Stephenson/"
 
 if False:
-    from initialise_latent_var import get_CC_effect_init, cc_genes
+    from utils.initialise_latent_var import get_CC_effect_init, cc_genes
 
     adata_full = sc.read_h5ad(data_dir + "Stephenson.h5ad")
     adata_full.obs = adata_full.obs[['sample_id', 'Site', 'harmonized_celltype']].copy()

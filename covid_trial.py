@@ -11,18 +11,23 @@ device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cp
 #####################################################################
 # Data Prep
 
-import scvi
+import os, scvi
 
 data_dir = "data/COVID_Stephenson/"
 
-if False:
+if not os.path.exists(os.path.join(data_dir, "Stephenson.subsample.100k.h5ad")):
+    os.makedirs(data_dir, exist_ok=True)
+
+    import gdown
+    gdown.download(id='1Sw5UnLPRLD-4fyFItO4bQbmJioUjABvf', output=data_dir)
+
     from utils.initialise_latent_var import get_CC_effect_init, cc_genes
 
     adata_full = sc.read_h5ad(data_dir + "Stephenson.h5ad")
     adata_full.obs = adata_full.obs[['sample_id', 'Site', 'harmonized_celltype']].copy()
 
     adata_full.obs['cell_cycle_init'] = get_CC_effect_init(adata_full, cc_genes)
-    adata = sc.pp.subsample(adata_full, n_obs = 100000, copy=True)
+    adata = sc.pp.subsample(adata_full, n_obs=100000, copy=True)
 
     adata.layers['counts'] = adata.layers['raw'].copy()
     sc.pp.highly_variable_genes(adata, n_top_genes=5000, subset=True)
@@ -62,7 +67,6 @@ sc.pl.embedding(adata, 'X_umap_scVI', color = col_obs, legend_loc='on data', siz
 
 import gpytorch
 from model import GPLVM, LatentVariable, VariationalELBO, trange, BatchIdx
-from train import train_GPLVM, outputs_to_anndata
 from utils.preprocessing import setup_from_anndata
 from scvi.distributions import NegativeBinomial
 
@@ -200,7 +204,8 @@ if torch.cuda.is_available():
 
 losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y, lr=0.005, epochs=80, batch_size=250)
 
-# torch.save(gplvm.X_latent.state_dict(), 'latent_sd.pth')
+# if os.path.exists('latent_sd.pth'):
+#     torch.save(gplvm.X_latent.state_dict(), 'latent_sd.pth')
 gplvm.X_latent.load_state_dict(torch.load('latent_sd.pth'))
 
 num_mc = 15

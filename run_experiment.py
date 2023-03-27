@@ -1,12 +1,32 @@
 import torch
 import numpy as np
 import scanpy as sc
+
+import argparse
 import wandb
 
 import matplotlib.pyplot as plt
-# plt.ion(); plt.style.use('seaborn-pastel')
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+######################################
+# Argparser 
+
+parser = argparse.ArgumentParser()
+parser.add_argument('-n', '--model_name', help = "Model name")
+parser.add_argument('-ld','--likelihood_distribution', default='NB', help='Likelihood distribution')
+parser.add_argument('-df','--dispersion_factor', default=-1, help='Dispersion factor for NB') # default, learn the thetas
+parser.add_argument('-iscale', '--learn_scale', default=True, help="Include scale factor in mean")
+
+parser.add_argument('-ibc','--include_batch_norm', default=True, help='True or False for including batch norm')
+
+args = parser.parse_args()
+
+possible_likelihoods = ['NB', 'Poisson']
+
+if(isinstance(args.dispersion_factor, int)):
+    raise Exception('Please specify a positive integer for the dispersion factor or -1 if learnable theta or N/A.')
+if(not (args.likelihood_distribution in possible_likelihoods)):
+    raise Exception('Please specify a likelihood distribution that is either NB or Poisson.')
 
 ######################################
 # Load in prepped data
@@ -15,33 +35,62 @@ import os, scvi
 
 data_dir = "data/COVID_Stephenson/"
 adata = sc.read_h5ad(data_dir + "Stephenson.subsample.100k.h5ad")
+
 ######################################
 # Load in trained scVI and linear scVI models + their embeddings
 ######################################
+# inialialize scvi encoder + linear gplvm model
 import gpytorch
 from model import GPLVM, LatentVariable, VariationalELBO, trange, BatchIdx
 from utils.preprocessing import setup_from_anndata
-from scvi.distributions import NegativeBinomial
-
+from scvi.distributions import NegativeBinomial, Poisson
 
 seed = 42
 torch.manual_seed(seed)
 softplus = torch.nn.Softplus()
 softmax = torch.nn.Softmax(-1)
 
+class PoissonLikelihood(gpytorch.likelihoods._OneDimensionalLikelihood):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, function_samples, **kwargs):
+        # if(args.learn_scale):
+        scale = kwargs['scale'][:, 0] # set to S_l
+        # else:
+        #     scale = 1
+        fs = function_samples.softmax(dim=-1) 
+        return Poisson(rate=scale * fs)
+
+    def expected_log_prob(self, observations, function_dist, *args, **kwargs):
+        log_prob_lambda = lambda function_samples: self.forward(function_samples, **kwargs).log_prob(observations)
+        log_prob = self.quadrature(log_prob_lambda, function_dist)
+        return log_prob
+
+
+
 class NBLikelihood(gpytorch.likelihoods._OneDimensionalLikelihood):
     def __init__(self, d):
         super().__init__()
-        # self.log_theta = torch.nn.Parameter(torch.ones(d)) # <- learned via SVI
+        # if(args.dispersion_factor == -1):
+        self.log_theta = torch.nn.Parameter(torch.ones(d)) # <- learned via SVI
 
     def forward(self, function_samples, **kwargs):
+        # if(args.learn_scale):
         scale = kwargs['scale'][:, 0] # set to S_l
+        # else:
+            # scale = 1
         fs = function_samples.softmax(dim=-1) 
-        # return NegativeBinomial(
-        #     mu=scale * fs,
-        #     theta=1 #self.log_theta.exp()[:, None],
-        # )
-        return Poisson()
+
+        # if(args.dispersion_factor > 0):
+        theta = self.log_theta.exp()[:, None]
+        # else:
+            # theta=args.dispersion_factor
+
+        return NegativeBinomial(
+            mu=scale * fs,
+            theta = theta,
+        )
 
     def expected_log_prob(self, observations, function_dist, *args, **kwargs):
         log_prob_lambda = lambda function_samples: self.forward(function_samples, **kwargs).log_prob(observations)
@@ -138,56 +187,63 @@ seed = 42
 period_scale = np.pi
 X_latent = ScalyEncoder(q, d + X_covars.shape[1]) 
 
-# gplvm = GPLVM(n, d, q, 
-#               covariate_dim=len(X_covars.T),
-#               n_inducing=q + len(X_covars.T) + 1,  # TODO: larger inducing number shouldn't increase performance
-#               period_scale=np.pi,
-#               X_latent=X_latent,
-#               X_covars=X_covars,
-#               pseudotime_dim=False)
+gplvm = GPLVM(n, d, q, 
+              covariate_dim=len(X_covars.T),
+              # n_inducing=q + len(X_covars.T) + 30, #+1 ,  # TODO: larger inducing number shouldn't increase performance
+              n_inducing=q + len(X_covars.T) + 1,
+              period_scale=np.pi,
+              X_latent=X_latent,
+              X_covars=X_covars,
+              pseudotime_dim=False)
 
-# gplvm.intercept = gpytorch.means.ConstantMean()
-# gplvm.random_effect_mean = gpytorch.means.ZeroMean()
-# gplvm.covar_module = gpytorch.kernels.LinearKernel(q + len(X_covars.T))
+gplvm.intercept = gpytorch.means.ConstantMean()
+gplvm.random_effect_mean = gpytorch.means.ZeroMean()
+gplvm.covar_module = gpytorch.kernels.LinearKernel(q + len(X_covars.T))
 
-# likelihood = NBLikelihood(d)
+if(args.likelihood_distribution == 'NB'):
+    likelihood = NBLikelihood(d)
+if(args.likelihood_distribution == 'Poisson'):
+    likelihood = PoissonLikelihood()
+if(args.likelihood_distribution == 'Bernoulli'):
+    likelihood = gpytorch.likelihoods.BernoulliLikelihood()
 
-# if torch.cuda.is_available():
-#     Y = Y.cuda()
-#     gplvm = gplvm.cuda()
-#     gplvm.X_covars = gplvm.X_covars.cuda()
-#     likelihood = likelihood.cuda()
-#     gplvm.X_latent = gplvm.X_latent.cuda()
+if torch.cuda.is_available():
+    Y = Y.cuda()
+    gplvm = gplvm.cuda()
+    gplvm.X_covars = gplvm.X_covars.cuda()
+    likelihood = likelihood.cuda()
+    gplvm.X_latent = gplvm.X_latent.cuda()
 
-# wandb.init(project="scvi-ablation", entity="ml-at-cl")
+# model_name = args.model_name
+changes = 'bernoulli'
+model_name = f'linear_gplvm_{changes}' 
+wandb.init(project="scvi-ablation", entity="ml-at-cl", name = model_name)
 
-# wandb.config = {
-#   "learning_rate": 0.005,
-#   "epochs": 25,
-#   "batch_size": 128
-# }
+wandb.config = {
+  "learning_rate": 0.005,
+  "epochs": 30,
+  "batch_size": 30
+}
 
-# losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y, lr=wandb.config['learning_rate'], epochs=wandb.config['epochs'], batch_size=wandb.config['batch_size']) # TODO: check if you can make this run faster
-
+losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y, lr=wandb.config['learning_rate'], epochs=wandb.config['epochs'], batch_size=wandb.config['batch_size']) # TODO: check if you can make this run faster
 
 
 # # if os.path.exists('latent_sd.pt'):
-# torch.save(losses, 'models/latent_sd_noscale_fixeddispersion1_losses.pt')
-# torch.save(gplvm.X_latent.state_dict(), 'models/latent_sd_noscale_fixeddispersion1_state_dict.pt')
-X_latent.load_state_dict(torch.load('models/latent_sd_noscale_fixeddispersion1_state_dict.pt'))
-# X_latent.load_state_dict(torch.load('models/latent_sd_scaleexpt_statedict.pt'))
-X_latent.eval()
-X_latent.cuda()
+torch.save(losses, f'models/{model_name}_losses.pt')
+torch.save(gplvm.X_latent.state_dict(), f'models/{model_name}_state_dict.pt')
+
+# # model_name = 'linear_gplvm_inducing_vars_add30'
+# X_latent.load_state_dict(torch.load(f'models/{model_name}_state_dict.pt'))
+# X_latent.eval()
+# X_latent.cuda()
 
 #-- plotting --
 # find X_latent means directly
-# z_params = gplvm.X_latent.z_nnet(torch.cat([Y.cuda(), X_covars.cuda()], axis=1))
-z_params = X_latent.z_nnet(torch.cat([Y.cuda(), X_covars.cuda()], axis=1))
+z_params = gplvm.X_latent.z_nnet(torch.cat([Y.cuda(), X_covars.cuda()], axis=1))
+# z_params = X_latent.z_nnet(torch.cat([Y.cuda(), X_covars.cuda()], axis=1))
 
-# X_latent_dims =  z_params[..., :gplvm.X_latent.latent_dim]
-X_latent_dims = z_params[..., :X_latent.latent_dim]
-
-model_name = 'linear_BGPLVM_dispersion1'#'linear_BGPLVM' 
+X_latent_dims =  z_params[..., :gplvm.X_latent.latent_dim]
+# X_latent_dims = z_params[..., :X_latent.latent_dim]
 
 adata.obsm[f'X_{model_name}_latent'] = X_latent_dims.detach().cpu().numpy()
 
@@ -205,9 +261,9 @@ import scib
 batch_metrics = calc_batch_metrics(adata, embed_key = f'X_{model_name}_latent', batch_key = 'Site', label_key = 'harmonized_celltype')
 torch.save(batch_metrics, f'models/{model_name}_batch_metrics.pt')
 
-bio_metrics = calc_bio_metrics(adata, embed_key = f'X_{model_name}_latent', metrics_list = ['cLisi'])
+bio_metrics = calc_bio_metrics(adata, embed_key = f'X_{model_name}_latent')
 torch.save(bio_metrics, f'models/{model_name}_bio_metrics.pt')
 
-# wandb.log({'batch_metrics': batch_metrics})
+wandb.log({'batch_metrics': batch_metrics, 'bio_metrics': bio_metrics})
 
 

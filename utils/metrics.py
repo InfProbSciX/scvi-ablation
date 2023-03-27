@@ -16,9 +16,10 @@ data_dir = "data/COVID_Stephenson/"
 from sklearn.metrics import mean_squared_error
 
 
-def rmse(model, adata_test):
-	imputed_values = model.get_normalized_expression(adata_test, return_mean=True)
-	return mean_squared_error(adata_test.X, imputed_values)
+
+# def rmse(model, adata_test):
+# 	imputed_values = model.get_normalized_expression(adata_test, return_mean=True)
+# 	return mean_squared_error(adata_test.X, imputed_values)
 
 
 ########################
@@ -119,43 +120,6 @@ def calc_bio_metrics(adata, embed_key,
 		print(bio_metrics)
 
 	return bio_metrics, adata_copy
-
-# def nmi(adata, embed_key, label_key, 
-# 		neighbor_key = None, cluster_key, cluster_fn_name = 'KMeans',
-# 		force = False, verbose = True):
-# 	# nmi with optimal clustering
-# 	# default clustering is KMeans with n_init = 200
-# 	# if Louvain or Leiden clustering specified, resolutions are optimized for 10 vals ranging between 0.1 and 2
-# 	return clustering(data, embed_key, label_key, scib.me.nmi,
-# 			 			neighbor_key, cluster_key, cluster_fn_name = cluster_fn_name,
-# 			   			force = force, verbose = verbose)
-     
-
-
-# def ari(adata, embed_key, label_key,
-# 		neighbor_key = None, cluster_key, cluster_fn_name = 'KMeans',
-# 		force = False, verbose = True): 
-# 	# use sklearn's ARI implementation
-# 	# Similarity score between -0.5 and 1.0. 
-# 	# Random labelings have an ARI close to 0.0,  1.0 stands for perfect match.
-# 	return clustering(data, embed_key, label_key, scib.me.ari,
-# 			 			neighbor_key, cluster_key, cluster_fn_name = cluster_fn_name,
-# 			   			force = force, verbose = verbose)
-
-
-# def iso_labels_f1(adata, embed_key, label_key, batch_key):
-# 	sc.pp.neighbors(adata, use_rep=embed_key)
-# 	return scib.me.isolated_labels_f1(adata, batch_key=batch_key, label_key=label_key)
-
-# def asw(adata, embed_key, label_key):
-# 	return scib.me.silhouette(adata, label_key = label_key, embed=embed_key)
-
-# def cLisi(adata, embed_key, label_key):
-# 	return scib.me.clisi_graph(adata, label_key=label_key, type="embed", use_rep=embed_key)
-
-# def iso_labels_asw(adata, embed_key, label_key, batch_key):
-# 	return scib.me.isolated_labels_asw(adata, batch_key=batch_key, label_key=label_key, embed=embed_key)
-
 
 # 2. batch removal metrics
 def calc_batch_metrics(adata, embed_key, 

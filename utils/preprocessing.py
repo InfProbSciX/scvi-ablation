@@ -57,7 +57,7 @@ def setup_from_anndata(
             cont_obs = None
 
         if cat_model_mat is not None or cont_obs is not None:
-            model_mat = pd.concat([cont_obs, cat_model_mat], 1)
+            model_mat = pd.concat([cont_obs, cat_model_mat], axis=1)
             X_covars = torch.tensor(model_mat.values).float()
         else:
             model_mat = None

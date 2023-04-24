@@ -57,7 +57,7 @@ class GPLVM(ApproximateGP):
         q_u = CholeskyVariationalDistribution(n_inducing,
                                               batch_shape=self.batch_shape)
         q_f = VariationalStrategy(self, self.inducing_inputs,
-                                  q_u, learn_inducing_locations=False)
+                                  q_u, learn_inducing_locations=True) # changed inducing location to True
 
         super(GPLVM, self).__init__(q_f)
 

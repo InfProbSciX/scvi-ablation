@@ -32,6 +32,7 @@ if(not (args.likelihood_distribution in possible_likelihoods)):
 # Load in prepped data
 
 import os, scvi
+from gpytorch.priors import NormalPrior
 
 data_dir = "data/COVID_Stephenson/"
 adata = sc.read_h5ad(data_dir + "Stephenson.subsample.100k.h5ad")
@@ -99,11 +100,16 @@ class NBLikelihood(gpytorch.likelihoods._OneDimensionalLikelihood):
 
 
 class ScalyEncoder(LatentVariable):
-    """ KL is ignored for now. """
+    """ KL added for both q_x and q_l"""
     def __init__(self, latent_dim, input_dim):
         super().__init__()
         self.latent_dim = latent_dim
         self.input_dim = input_dim
+        
+        self.prior_x = NormalPrior(
+            torch.zeros(1, latent_dim),
+            torch.ones(1, latent_dim))
+        
         self.z_nnet = torch.nn.Sequential(
             torch.nn.Linear(input_dim, 128),
             torch.nn.ReLU(),
@@ -139,6 +145,10 @@ class ScalyEncoder(LatentVariable):
         ## Adding KL(q|p) loss term 
         x_kl = _KL(q_x, self.prior_x, Y.shape[0], self.input_dim)
         self.update_added_loss_term('x_kl', x_kl)
+        
+        # x_kl = _KL(q_l, self.prior_l, Y.shape[0], self.input_dim)
+        # self.update_added_loss_term('x_kl', x_kl)
+        
         return q_x.rsample(), q_l.rsample()
 
 def train(gplvm, likelihood, Y, epochs=100, batch_size=100, lr=0.01):

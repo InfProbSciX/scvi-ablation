@@ -41,7 +41,7 @@ adata = sc.read_h5ad(data_dir + "Stephenson.subsample.100k.h5ad")
 ######################################
 # inialialize scvi encoder + linear gplvm model
 import gpytorch
-from model import GPLVM, LatentVariable, VariationalELBO, trange, BatchIdx
+from model import GPLVM, LatentVariable, VariationalELBO, trange, BatchIdx, _KL
 from utils.preprocessing import setup_from_anndata
 from scvi.distributions import NegativeBinomial, Poisson
 
@@ -103,7 +103,7 @@ class ScalyEncoder(LatentVariable):
     def __init__(self, latent_dim, input_dim):
         super().__init__()
         self.latent_dim = latent_dim
-
+        self.input_dim = input_dim
         self.z_nnet = torch.nn.Sequential(
             torch.nn.Linear(input_dim, 128),
             torch.nn.ReLU(),
@@ -136,6 +136,9 @@ class ScalyEncoder(LatentVariable):
             l_params[..., :1].tanh()*10,
             l_params[..., 1:].sigmoid()*10 + 1e-4
         )
+        ## Adding KL(q|p) loss term 
+        x_kl = _KL(q_x, self.prior_x, Y.shape[0], self.input_dim)
+        self.update_added_loss_term('x_kl', x_kl)
         return q_x.rsample(), q_l.rsample()
 
 def train(gplvm, likelihood, Y, epochs=100, batch_size=100, lr=0.01):

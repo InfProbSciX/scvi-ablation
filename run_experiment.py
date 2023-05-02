@@ -41,31 +41,31 @@ adata = sc.read_h5ad(data_dir + "Stephenson.subsample.100k.h5ad")
 ######################################
 # inialialize scvi encoder + linear gplvm model
 import gpytorch
-from model import GPLVM, LatentVariable, VariationalELBO, trange, BatchIdx
+from model import GPLVM, LatentVariable, VariationalELBO, trange, BatchIdx, GaussianLikelihood
 from utils.preprocessing import setup_from_anndata
-from scvi.distributions import NegativeBinomial, Poisson
+# from utils.metrics import calc_batch_metrics, calc_bio_metrics
+from scvi.distributions import NegativeBinomial, ZeroInflatedNegativeBinomial
 
 seed = 42
 torch.manual_seed(seed)
 softplus = torch.nn.Softplus()
 softmax = torch.nn.Softmax(-1)
 
-class PoissonLikelihood(gpytorch.likelihoods._OneDimensionalLikelihood):
-    def __init__(self):
-        super().__init__()
+# class BernoulliLikelihood(gpytorch.likelihoods._OneDimensionalLikelihood):
+#     def __init__(self):
+#         super().__init__()
 
-    def forward(self, function_samples, **kwargs):
-        # if(args.learn_scale):
-        scale = kwargs['scale'][:, 0] # set to S_l
-        # else:
-        #     scale = 1
-        fs = function_samples.softmax(dim=-1) 
-        return Poisson(rate=scale * fs)
+#     def forward(self, function_samples, **kwargs):
+#         scale = kwargs['scale'][:, 0] # set to S_l
+#         # else:
+#         #     scale = 1
+#         fs = function_samples.softmax(dim=-1) 
+#         return Bernoulli(rate=scale * fs)
 
-    def expected_log_prob(self, observations, function_dist, *args, **kwargs):
-        log_prob_lambda = lambda function_samples: self.forward(function_samples, **kwargs).log_prob(observations)
-        log_prob = self.quadrature(log_prob_lambda, function_dist)
-        return log_prob
+#     def expected_log_prob(self, observations, function_dist, *args, **kwargs):
+#         log_prob_lambda = lambda function_samples: self.forward(function_samples, **kwargs).log_prob(observations)
+#         log_prob = self.quadrature(log_prob_lambda, function_dist)
+#         return log_prob
 
 
 
@@ -77,9 +77,9 @@ class NBLikelihood(gpytorch.likelihoods._OneDimensionalLikelihood):
 
     def forward(self, function_samples, **kwargs):
         # if(args.learn_scale):
-        scale = kwargs['scale'][:, 0] # set to S_l
+        # scale = kwargs['scale'][:, 0] # set to S_l
         # else:
-            # scale = 1
+        scale = 1
         fs = function_samples.softmax(dim=-1) 
 
         # if(args.dispersion_factor > 0):
@@ -89,13 +89,85 @@ class NBLikelihood(gpytorch.likelihoods._OneDimensionalLikelihood):
 
         return NegativeBinomial(
             mu=scale * fs,
-            theta = theta,
+            theta = theta, #1
         )
 
     def expected_log_prob(self, observations, function_dist, *args, **kwargs):
         log_prob_lambda = lambda function_samples: self.forward(function_samples, **kwargs).log_prob(observations)
         log_prob = self.quadrature(log_prob_lambda, function_dist)
         return log_prob
+
+class Linear1LayerEncoder(LatentVariable):
+    def __init__(self, latent_dim, input_dim):
+        super().__init__()
+        self.latent_dim = latent_dim
+
+        self.z_nnet = torch.nn.Sequential(
+            torch.nn.Linear(input_dim, 128),
+            # torch.nn.ReLU(),
+            # torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001), # TODO: check what this is for
+            # torch.nn.Linear(128, 128),
+            # torch.nn.ReLU(),
+            # torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001),
+            torch.nn.Linear(128, latent_dim*2),
+        )
+
+    def forward(self, Y=None, X_covars=None):
+        z_params = self.z_nnet(torch.cat([Y, X_covars], axis=1))
+
+        q_x = torch.distributions.Normal(
+            z_params[..., :self.latent_dim],
+            softplus(z_params[..., self.latent_dim:]) + 1e-4
+        )
+        return q_x.rsample()
+
+class Linear2LayerEncoder(LatentVariable):
+    def __init__(self, latent_dim, input_dim):
+        super().__init__()
+        self.latent_dim = latent_dim
+
+        self.z_nnet = torch.nn.Sequential(
+            torch.nn.Linear(input_dim, 128),
+            # torch.nn.ReLU(),
+            # torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001), # TODO: check what this is for
+            torch.nn.Linear(128, 128),
+            # torch.nn.ReLU(),
+            # torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001),
+            torch.nn.Linear(128, latent_dim*2),
+        )
+
+    def forward(self, Y=None, X_covars=None):
+        z_params = self.z_nnet(torch.cat([Y, X_covars], axis=1))
+
+        q_x = torch.distributions.Normal(
+            z_params[..., :self.latent_dim],
+            softplus(z_params[..., self.latent_dim:]) + 1e-4
+        )
+        return q_x.rsample()
+
+class OneLayerEncoder(LatentVariable):
+    def __init__(self, latent_dim, input_dim):
+        super().__init__()
+        self.latent_dim = latent_dim
+
+        self.z_nnet = torch.nn.Sequential(
+            torch.nn.Linear(input_dim, 128),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001), # TODO: check what this is for
+            # torch.nn.Linear(128, 128),
+            # torch.nn.ReLU(),
+            # torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001),
+            torch.nn.Linear(128, latent_dim*2),
+        )
+
+    def forward(self, Y=None, X_covars=None):
+        z_params = self.z_nnet(torch.cat([Y, X_covars], axis=1))
+
+        q_x = torch.distributions.Normal(
+            z_params[..., :self.latent_dim],
+            softplus(z_params[..., self.latent_dim:]) + 1e-4
+        )
+        return q_x.rsample()
 
 
 class ScalyEncoder(LatentVariable):
@@ -156,10 +228,11 @@ def train(gplvm, likelihood, Y, epochs=100, batch_size=100, lr=0.01):
         try:
             # ---------------------------------
             Y_batch = Y[batch_index]
-            X_l, S_l = gplvm.X_latent(Y_batch, gplvm.X_covars[batch_index])
+            # X_l, S_l = gplvm.X_latent(Y_batch, gplvm.X_covars[batch_index])
+            X_l = gplvm.X_latent(Y_batch, gplvm.X_covars[batch_index])
             X_sample = torch.cat((X_l, gplvm.X_covars[batch_index]), axis=1)
             gplvm_dist = gplvm(X_sample)
-            loss = -elbo_func(gplvm_dist, Y_batch.T, scale=S_l).sum()
+            loss = -elbo_func(gplvm_dist, Y_batch.T).sum() #, scale=S_l).sum()
             # ---------------------------------
         except:
             from IPython.core.debugger import set_trace; set_trace()
@@ -171,6 +244,8 @@ def train(gplvm, likelihood, Y, epochs=100, batch_size=100, lr=0.01):
 
     return losses
 #############
+
+# onload and offload data as needed
 
 # load in data
 Y, X_covars = setup_from_anndata(adata, 
@@ -185,11 +260,15 @@ seed = 42
 
 (n, d), q = Y.shape, q
 period_scale = np.pi
-X_latent = ScalyEncoder(q, d + X_covars.shape[1]) 
+# X_latent = ScalyEncoder(q, d + X_covars.shape[1])
+# X_latent =  Linear1LayerEncoder(q, d + X_covars.shape[1])
+X_latent =  Linear2LayerEncoder(q, d + X_covars.shape[1])
+# X_latent =  OneLayerEncoder(q, d + X_covars.shape[1])
+
 
 gplvm = GPLVM(n, d, q, 
               covariate_dim=len(X_covars.T),
-              # n_inducing=q + len(X_covars.T) + 30, #+1 ,  # TODO: larger inducing number shouldn't increase performance
+              # n_inducing=q + len(X_covars.T) + 1 + 30, #+1 ,  # TODO: larger inducing number shouldn't increase performance
               n_inducing=q + len(X_covars.T) + 1,
               period_scale=np.pi,
               X_latent=X_latent,
@@ -202,10 +281,10 @@ gplvm.covar_module = gpytorch.kernels.LinearKernel(q + len(X_covars.T))
 
 if(args.likelihood_distribution == 'NB'):
     likelihood = NBLikelihood(d)
-if(args.likelihood_distribution == 'Poisson'):
-    likelihood = PoissonLikelihood()
 if(args.likelihood_distribution == 'Bernoulli'):
     likelihood = gpytorch.likelihoods.BernoulliLikelihood()
+if(args.likelihood_distribution == 'Gaussian'):
+    likelihood = GaussianLikelihood(batch_shape=gplvm.batch_shape)
 
 if torch.cuda.is_available():
     Y = Y.cuda()
@@ -215,55 +294,92 @@ if torch.cuda.is_available():
     gplvm.X_latent = gplvm.X_latent.cuda()
 
 # model_name = args.model_name
-changes = 'bernoulli'
+changes = 'nblikelihood_linear2layerencoder'#'inducing_var_add30' #'nblikelihood_1layerencoder'#'gaussianlikelihood'#'nblikelihood_dispersion_factor_1_scale_1' #'nblikelihood_learned_dispersion_scale_1'
 model_name = f'linear_gplvm_{changes}' 
-wandb.init(project="scvi-ablation", entity="ml-at-cl", name = model_name)
 
-wandb.config = {
+config = {
   "learning_rate": 0.005,
-  "epochs": 30,
-  "batch_size": 30
+  "epochs": 20, # 30
+  "batch_size": 150,
+  "likelihood": f'NBLikelihood({d}) with learned theta and scale = 1', #f'GaussianLikelihood(batch_shape={gplvm.batch_shape})'
+  'X_latent': f'Linear2LayerEncoder({q}, {d + X_covars.shape[1]})',
+  'n_inducing': q + len(X_covars.T) + 1,
+  'covariate_dim': len(X_covars.T),
+  'period_scale': np.pi,
+  'X_covars': X_covars,
+  'pseudotime_dim': False,
+  'seed': 42,
+  'elbo_func': f'VariationalELBO(likelihood, gplvm, num_data={n}), learning inducing loc',
+  'gplvm': gplvm,
+  'gplvm.intercept': 'gpytorch.means.ConstantMean()',
+  'gplvm.random_effect_mean': 'gpytorch.means.ZeroMean()',
+  'gplvm.covar_module': 'gpytorch.kernels.LinearKernel(q + len(X_covars.T))'
 }
 
-losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y, lr=wandb.config['learning_rate'], epochs=wandb.config['epochs'], batch_size=wandb.config['batch_size']) # TODO: check if you can make this run faster
+wandb.init(project="scvi-ablation", entity="ml-at-cl", name = model_name, config = config)
+
+losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y, lr=config['learning_rate'], epochs=config['epochs'], batch_size=config['batch_size']) 
 
 
-# # if os.path.exists('latent_sd.pt'):
+# bio_metrics = torch.load('models/linear_gplvm_nblikelihood_learned_dispersion_bio_metrics.pt')
+
 torch.save(losses, f'models/{model_name}_losses.pt')
 torch.save(gplvm.X_latent.state_dict(), f'models/{model_name}_state_dict.pt')
 
-# # model_name = 'linear_gplvm_inducing_vars_add30'
-# X_latent.load_state_dict(torch.load(f'models/{model_name}_state_dict.pt'))
-# X_latent.eval()
-# X_latent.cuda()
+Y = Y.cpu()
+gplvm = gplvm.cpu()
+gplvm.X_covars = gplvm.X_covars.cpu()
+likelihood = likelihood.cpu()
+gplvm.X_latent = gplvm.X_latent.cpu()
+torch.cuda.empty_cache()
+import gc
+gc.collect()
+######
+# model_name = 'linear_gplvm_nblikelihood_1layerencoder'
+X_latent.load_state_dict(torch.load(f'models/{model_name}_state_dict.pt'))
+X_latent.eval()
+
+# # find X_latent means directly
+# z_params = gplvm.X_latent.z_nnet(torch.cat([Y, X_covars], axis=1))
+z_params = X_latent.z_nnet(torch.cat([Y, X_covars], axis=1))
+
+# X_latent_dims =  z_params[..., :gplvm.X_latent.latent_dim]
+X_latent_dims = z_params[..., :X_latent.latent_dim]
+
+adata.obsm[f'X_{model_name}_latent'] = X_latent_dims.detach().numpy()
 
 #-- plotting --
-# find X_latent means directly
-z_params = gplvm.X_latent.z_nnet(torch.cat([Y.cuda(), X_covars.cuda()], axis=1))
-# z_params = X_latent.z_nnet(torch.cat([Y.cuda(), X_covars.cuda()], axis=1))
+# sc.pp.neighbors(adata, n_neighbors=50, use_rep=f'X_{model_name}_latent', key_added=f'X_{model_name}_k50')
+# sc.tl.umap(adata, neighbors_key=f'X_{model_name}_k50')
+# adata.obsm[f'X_umap_{model_name}'] = adata.obsm['X_umap'].copy()
 
-X_latent_dims =  z_params[..., :gplvm.X_latent.latent_dim]
-# X_latent_dims = z_params[..., :X_latent.latent_dim]
+# plt.rcParams['figure.figsize'] = [10,10]
+# col_obs = ['harmonized_celltype', 'Site']
+# sc.pl.embedding(adata, f'X_umap_{model_name}', color = col_obs, legend_loc='on data', size=5)
+#------
+def test(adata, batch_key, label_key, embed_key):
+    import ipdb; ipdb.set_trace()
+    temp_score = scib.me.ilisi_graph(adata, batch_key=batch_key, type_="embed", use_rep=embed_key)
+    print(temp_score)
+    return temp_score
+test(adata, batch_key = 'Site', label_key = 'harmonized_celltype', embed_key =  f'X_{model_name}_latent')
 
-adata.obsm[f'X_{model_name}_latent'] = X_latent_dims.detach().cpu().numpy()
+# adata_copy = sc.pp.neighbors(adata, use_rep=embed_key, n_neighbors = k, copy = True)
+# batch_metrics['graph_connectivity'] = scib.me.graph_connectivity(adata_copy, label_key=label_key)
 
-sc.pp.neighbors(adata, n_neighbors=50, use_rep=f'X_{model_name}_latent', key_added=f'X_{model_name}_k50')
-sc.tl.umap(adata, neighbors_key=f'X_{model_name}_k50')
-adata.obsm[f'X_umap_{model_name}'] = adata.obsm['X_umap'].copy()
+clisiscore = calc_bio_metrics(adata, embed_key = f"X_{model_name}_latent", metrics_list = ['cLisi'])
+calc_batch_metrics(adata, embed_key = f'X_{model_name}_latent', metrics_list = ['batchASW'])
 
-plt.rcParams['figure.figsize'] = [10,10]
-col_obs = ['harmonized_celltype', 'Site']
-sc.pl.embedding(adata, f'X_umap_{model_name}', color = col_obs, legend_loc='on data', size=5)
 
+# bio_metrics = torch.load(f'models/{model_name}_bio_metrics.pt')
 # import metrics stuff
 import scib
-
-batch_metrics = calc_batch_metrics(adata, embed_key = f'X_{model_name}_latent', batch_key = 'Site', label_key = 'harmonized_celltype')
+batch_metrics = calc_batch_metrics(adata, embed_key = f'X_{model_name}_latent')#, metrics_list = [''])
 torch.save(batch_metrics, f'models/{model_name}_batch_metrics.pt')
 
-bio_metrics = calc_bio_metrics(adata, embed_key = f'X_{model_name}_latent')
+bio_metrics = calc_bio_metrics(adata, embed_key = f"X_{model_name}_latent")
 torch.save(bio_metrics, f'models/{model_name}_bio_metrics.pt')
 
-wandb.log({'batch_metrics': batch_metrics, 'bio_metrics': bio_metrics})
-
+# wandb.log({'batch_metrics': batch_metrics, 'bio_metrics': bio_metrics})
+wandb.finish()
 

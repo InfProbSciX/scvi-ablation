@@ -12,22 +12,22 @@ device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cp
 #####################################################################
 # Data Prep
 
-import os, scvi
+# import os, scvi
 
-data_dir = "data/COVID_Stephenson/"
+# data_dir = "data/COVID_Stephenson/"
 
 # if not os.path.exists(os.path.join(data_dir, "Stephenson.subsample.100k.h5ad")):
-    # os.makedirs(data_dir, exist_ok=True)
+#     os.makedirs(data_dir, exist_ok=True)
 
-    # import gdown
-    # gdown.download(id='1Sw5UnLPRLD-4fyFItO4bQbmJioUjABvf', output=data_dir)
+#     import gdown
+#     gdown.download(id='1Sw5UnLPRLD-4fyFItO4bQbmJioUjABvf', output=data_dir)
 
-    # from utils.initialise_latent_var import get_CC_effect_init, cc_genes
+#     from utils.initialise_latent_var import get_CC_effect_init, cc_genes
 
-    # adata_full = sc.read_h5ad(data_dir + "Stephenson.h5ad")
-    # adata_full.obs = adata_full.obs[['sample_id', 'Site', 'harmonized_celltype']].copy()
+#     adata_full = sc.read_h5ad(data_dir + "Stephenson.h5ad")
+#     adata_full.obs = adata_full.obs[['sample_id', 'Site', 'harmonized_celltype']].copy()
 
-    # adata_full.obs['cell_cycle_init'] = get_CC_effect_init(adata_full, cc_genes)
+#     adata_full.obs['cell_cycle_init'] = get_CC_effect_init(adata_full, cc_genes)
 #     adata = sc.pp.subsample(adata_full, n_obs=100000, copy=True)
 
 #     adata.layers['counts'] = adata.layers['raw'].copy()
@@ -42,19 +42,36 @@ adata = sc.read_h5ad(data_dir + "Stephenson.subsample.100k.h5ad")
 # SCVI Run
 
 adata_ref_scvi = adata.copy()
-# scvi.model.SCVI.setup_anndata(adata_ref_scvi, batch_key='sample_id', layer='counts')
+scvi.model.SCVI.setup_anndata(adata_ref_scvi, batch_key='sample_id', layer='counts')
 
-# arches_params = dict(
-#     use_layer_norm="both",
-#     use_batch_norm="none",
-#     encode_covariates=True,
-#     dropout_rate=0.2,
-#     n_layers=2,
-#     gene_likelihood = 'nb',
-# )
+arches_params = dict(
+    use_layer_norm="both",
+    use_batch_norm="none",
+    encode_covariates=True,
+    dropout_rate=0.2,
+    n_layers=2,
+    gene_likelihood = 'nb',
+)
 
-# scvi_ref = scvi.model.SCVI(adata_ref_scvi, **arches_params)
-# scvi_ref.train()
+arches_params_zinb = dict(
+    use_layer_norm="both",
+    use_batch_norm="none",
+    encode_covariates=True,
+    dropout_rate=0.2,
+    n_layers=2,
+    gene_likelihood = 'zinb',
+)
+
+train_params = dict(
+    max_epochs=500, 
+    train_size = 1.0,
+    batch_size = 150,
+    plan_kwargs = {'lr': 0.005}, 
+)
+
+scvi_ref = scvi.model.SCVI(adata_ref_scvi, **arches_params_zinb)
+scvi_ref.train(**train_params)
+
 
 # adata_ref_scvi.obsm["X_nonlinear_nb_scVI"] = scvi_ref.get_latent_representation()
 # adata.obsm["X_nonlinear_nb_scVI"] = scvi_ref.get_latent_representation(adata_ref_scvi)
@@ -66,8 +83,14 @@ adata_ref_scvi = adata.copy()
 # col_obs = ['harmonized_celltype', 'Site']
 # sc.pl.embedding(adata, 'X_umap_nonlinear_scVI', color = col_obs, legend_loc='on data', size=5)
 
+
 # scvi_ref.save('models/nonlinearNBSCVI/')
-scvi_ref = scvi.model.SCVI.load('models/nonlinearNBSCVI', adata_ref_scvi)
+scvi_ref.save('models/nonlinearZINBSCVI/')
+losses = scvi_ref.history['elbo_train']
+# torch.save(losses, f'models/nonlinearNBSCVI_losses.pt')
+torch.save(losses, f'models/nonlinearZINBSCVI_losses.pt')
+
+# scvi_ref = scvi.model.SCVI.load('models/nonlinearNBSCVI', adata_ref_scvi)
 
 adata_ref_scvi.obsm["X_scVI"] = scvi_ref.get_latent_representation()
 adata.obsm["X_scVI"] = scvi_ref.get_latent_representation(adata_ref_scvi)
@@ -76,11 +99,15 @@ adata.obsm["X_scVI"] = scvi_ref.get_latent_representation(adata_ref_scvi)
 # scvi_reconstruction_error = scvi_ref.get_reconstruction_error(adata_ref_scvi)
 # print(scvi_reconstruction_error)
 
-bio_metrics, _ = calc_bio_metrics(adata, embed_key = 'X_scVI')
-torch.save(bio_metrics, 'models/nonlinearNBSCVI_bio_metrics.pt')
+bio_metrics = calc_bio_metrics(adata, embed_key = 'X_scVI')
+# torch.save(bio_metrics, 'models/nonlinearNBSCVI_bio_metrics.pt')
+torch.save(bio_metrics, 'models/nonlinearZINBSCVI_bio_metrics.pt')
+
 # wandb.log({'scVI_bio_metrics': bio_metrics})
 batch_metrics = calc_batch_metrics(adata, embed_key = 'X_scVI')
-torch.save(batch_metrics, 'models/nonlinearNBSCVI_batch_metrics.pt')
+# torch.save(batch_metrics, 'models/nonlinearNBSCVI_batch_metrics.pt')
+torch.save(batch_metrics, 'models/nonlinearZINBSCVI_batch_metrics.pt')
+
 
 # umap stuff
 sc.pp.neighbors(adata, n_neighbors=50, use_rep='X_scVI', key_added='scVI_k50')
@@ -96,33 +123,46 @@ sc.pl.embedding(adata, 'X_umap_scVI', color = col_obs, legend_loc='on data', siz
 # Linear SCVI Run
 
 adata_ref = adata.copy()
-# scvi.model.LinearSCVI.setup_anndata(adata_ref, batch_key='sample_id', layer='counts')
+scvi.model.LinearSCVI.setup_anndata(adata_ref, batch_key='sample_id', layer='counts')
 
-# arches_params = dict(
-#     use_layer_norm="both",
-#     use_batch_norm="none",
-#     encode_covariates=True,
-#     dropout_rate=0.2,
-#     n_layers=2,
-# )
+arches_params = dict(
+    use_layer_norm="both",
+    use_batch_norm="none",
+    encode_covariates=True,
+    dropout_rate=0.2,
+    n_layers=2,
+    gene_likelihood = 'nb',
+)
 
-# vae_ref = scvi.model.LinearSCVI(adata_ref, **arches_params)
-# vae_ref.train()
+train_params = dict(
+    max_epochs=500, 
+    train_size = 1.0,
+    batch_size = 150,
+    plan_kwargs = {'lr': 0.005}, 
+)
 
-# # vae_ref.save('models/linearSCVI.pt')
-linear_scvi_ref = scvi.model.LinearSCVI.load('models/linearSCVI.pt', adata_ref)
+ldvae = scvi.model.LinearSCVI(adata_ref, **arches_params)
+ldvae.train(**train_params)
+
+ldvae.save('models/linearNBSCVI/')
+losses = ldvae.history['elbo_train']
+torch.save(losses, 'models/linearNBSCVI_losses.pt')
+losses.plot()
+plt.savefig("linearNBSCVI_losses.png")
+plt.show()
+
+ldvae = scvi.model.LinearSCVI.load('models/linearNBSCVI', adata_ref)
 
 #-- plotting--
 
-adata_ref.obsm["X_linear_scVI"] = linear_scvi_ref.get_latent_representation()
-adata.obsm["X_linear_scVI"] = linear_scvi_ref.get_latent_representation(adata_ref)
+adata_ref.obsm["X_linear_scVI"] = ldvae.get_latent_representation()
+adata.obsm["X_linear_scVI"] = ldvae.get_latent_representation(adata_ref)
 
-bio_metrics, _ = calc_bio_metrics(adata, embed_key = 'X_linear_scVI')
+bio_metrics = calc_bio_metrics(adata, embed_key = 'X_linear_scVI')
 torch.save(bio_metrics, 'models/linearNBSCVI_bio_metrics.pt')
 # wandb.log({'scVI_bio_metrics': bio_metrics})
 batch_metrics = calc_batch_metrics(adata, embed_key = 'X_linear_scVI')
 torch.save(batch_metrics, 'models/linearNBSCVI_batch_metrics.pt')
-
 
 
 sc.pp.neighbors(adata, n_neighbors=50, use_rep='X_linear_scVI', key_added='linear_scVI')
@@ -134,6 +174,7 @@ col_obs = ['harmonized_celltype', 'Site']
 sc.pl.embedding(adata, 'X_umap_linear_scVI', color = col_obs, legend_loc='on data', size=5)
 #####################################################################
 # Original GPLVM Run
+
 import gpytorch
 from model import GPLVM, LatentVariable, VariationalELBO, trange, BatchIdx, PointLatentVariable, GaussianLikelihood, NNEncoder
 from utils.preprocessing import setup_from_anndata
@@ -155,10 +196,9 @@ X_latent = NNEncoder(n, q, d, (128, 128))
 
 (n, d) = Y.shape
 period_scale = np.pi
-
 gplvm = GPLVM(n, d, q,
               covariate_dim=len(X_covars.T),
-              n_inducing=len(X_covars.T)+1,
+              n_inducing=q + len(X_covars.T)+1,
               period_scale=np.pi,
               X_latent=X_latent,
               X_covars=X_covars,
@@ -207,17 +247,27 @@ def train(gplvm, likelihood, Y, epochs=100, batch_size=100, lr=0.005):
 
     return losses
 
-gplvm.X_latent.X.requires_grad_(True)
 model_name = f'original_amortized_gplvm' 
-wandb.init(project="scvi-ablation", entity="ml-at-cl", name = model_name)
 
-wandb.config = {
+config = {
   "learning_rate": 0.005,
   "epochs": 30,
-  "batch_size": 100
+  "batch_size": 150,
+  "likelihood": f'GaussianLikelihood(batch_shape={gplvm.batch_shape})',
+  'X_latent': f'NNEncoder({n}, {q}, {d}, (128, 128))',
+  'n_inducing': q + len(X_covars.T) + 1,
+  'covariate_dim': len(X_covars.T),
+  'period_scale': np.pi,
+  'X_covars': X_covars,
+  'pseudotime_dim': False,
+  'seed': 42,
+  'elbo_func': f'VariationalELBO(likelihood, gplvm, num_data={n})'
 }
+
+wandb.init(project="scvi-ablation", entity="ml-at-cl", name = model_name, config = config)
+
 losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y,
-               epochs=wandb.config['epochs'], batch_size=wandb.config['batch_size'], lr=0.005) # 27min
+               epochs=config['epochs'], batch_size=config['batch_size'], lr=config['learning_rate']) # 27min
 
 
 # if os.path.exists('latent_sd.pt'):

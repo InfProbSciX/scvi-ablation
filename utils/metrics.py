@@ -5,11 +5,7 @@ import scanpy as sc
 import matplotlib.pyplot as plt
 # plt.ion(); plt.style.use('seaborn-pastel')
 
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-
-
-import os, scvi
-data_dir = "data/COVID_Stephenson/"
+# device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 #####################
 # Reconstruction error
@@ -33,7 +29,7 @@ import scib
 # # -> can also extend to use louvain clustering (as they do in scib)
 def kmeans_clustering(adata, label_key, embed_key, cluster_key):
 	if embed_key not in adata.obsm.keys():
-        print(adata.obsm.keys())
+		# print(adata.obsm.keys())
         raise KeyError(f"{embed_key} not in obsm")
 
     K = len(adata.obs[label_key].unique())
@@ -48,6 +44,7 @@ def kmeans_clustering(adata, label_key, embed_key, cluster_key):
 def make_clusterings(adata, embed_key, label_key, k = 15,
 			   neighbor_key = None, cluster_methods = ['kmeans', 'leiden'], # resolution is default for leiden clustering
 			   force = False, **kwargs):
+	# import ipdb; ipdb.set_trace()
 	# clusters and returns adata with knn graph and clusters
 	if neighbor_key == None:
 		neighbor_key = embed_key # set neighbor_key s.t. it's associated with latent space embedding method
@@ -94,7 +91,6 @@ def calc_bio_metrics(adata, embed_key,
 				batch_key = 'Site', label_key = 'harmonized_celltype', k = 15,
 				cluster_methods = ['kmeans', 'leiden'], # line for clustering 
 				metrics_list = ['nmi', 'ari', 'iso_labels_f1', 'cellASW', 'iso_labels_asw', 'cLisi']):
-	
 	adata_copy, cluster_keys = make_clusterings(adata, embed_key = embed_key,label_key = label_key, k = k, cluster_methods = cluster_methods)
 
 	bio_metrics = {}
@@ -119,7 +115,7 @@ def calc_bio_metrics(adata, embed_key,
 		bio_metrics['cLisi'] = scib.me.clisi_graph(adata_copy, label_key=label_key, type_="embed", use_rep=embed_key)
 		print(bio_metrics)
 
-	return bio_metrics, adata_copy
+	return bio_metrics
 
 # 2. batch removal metrics
 def calc_batch_metrics(adata, embed_key, 
@@ -128,6 +124,7 @@ def calc_batch_metrics(adata, embed_key,
 	# default: include all metrics
 	# knn graph constructed with k = 15, euclidean metric
 	batch_metrics = {}
+	# import ipdb; ipdb.set_trace()
 	print('batch metrics for', embed_key)
 	if('batchASW' in metrics_list):
 		batch_metrics['batchASW']  = scib.me.silhouette_batch(adata, batch_key=batch_key, label_key=label_key, embed=embed_key)

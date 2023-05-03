@@ -45,6 +45,7 @@ import gpytorch
 from model import GPLVM, LatentVariable, VariationalELBO, trange, BatchIdx, _KL
 from utils.preprocessing import setup_from_anndata
 from scvi.distributions import NegativeBinomial, Poisson
+from torch.distributions import LogNormal
 
 seed = 42
 torch.manual_seed(seed)
@@ -110,6 +111,8 @@ class ScalyEncoder(LatentVariable):
             torch.zeros(1, latent_dim),
             torch.ones(1, latent_dim))
         
+        self.prior_l = LogNormal(loc=0, scale=1)
+        
         self.z_nnet = torch.nn.Sequential(
             torch.nn.Linear(input_dim, 128),
             torch.nn.ReLU(),
@@ -146,8 +149,8 @@ class ScalyEncoder(LatentVariable):
         x_kl = _KL(q_x, self.prior_x, Y.shape[0], self.input_dim)
         self.update_added_loss_term('x_kl', x_kl)
         
-        # x_kl = _KL(q_l, self.prior_l, Y.shape[0], self.input_dim)
-        # self.update_added_loss_term('x_kl', x_kl)
+        l_kl = _KL(q_l, self.prior_l, Y.shape[0], self.input_dim)
+        self.update_added_loss_term('l_kl', l_kl)
         
         return q_x.rsample(), q_l.rsample()
 

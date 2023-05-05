@@ -70,6 +70,10 @@ class ScalyEncoder(LatentVariable):
         
         # self.prior_l = LogNormal(loc=0, scale=1)    # prior for scaling factor, may need to change with empirical mean and variance
         
+        
+        self.register_added_loss_term("x_kl")    # register added loss terms 
+        self.register_added_loss_term("l_kl")
+
         self.z_nnet = torch.nn.Sequential(          # NN for latent variables
             torch.nn.Linear(input_dim, 128),
             torch.nn.ReLU(),

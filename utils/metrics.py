@@ -2,22 +2,6 @@ import torch
 import numpy as np
 import scanpy as sc
 
-import matplotlib.pyplot as plt
-# plt.ion(); plt.style.use('seaborn-pastel')
-
-# device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-
-#####################
-# Reconstruction error
-from sklearn.metrics import mean_squared_error
-
-
-
-# def rmse(model, adata_test):
-# 	imputed_values = model.get_normalized_expression(adata_test, return_mean=True)
-# 	return mean_squared_error(adata_test.X, imputed_values)
-
-
 ########################
 # Latent space/ data integration metrics from scib 
 # most of these methods will be wrappers for or modified versions of scib metrics
@@ -29,10 +13,8 @@ import scib
 # # -> can also extend to use louvain clustering (as they do in scib)
 def kmeans_clustering(adata, label_key, embed_key, cluster_key):
 	if embed_key not in adata.obsm.keys():
-		# print(adata.obsm.keys())
-        raise KeyError(f"{embed_key} not in obsm")
-
-    K = len(adata.obs[label_key].unique())
+		raise KeyError(f"{embed_key} not in obsm")
+	K = len(adata.obs[label_key].unique())
 
 	latent_space = adata.obsm[embed_key]
 	labels_pred = KMeans(K, n_init=200).fit_predict(latent_space)
@@ -54,21 +36,21 @@ def make_clusterings(adata, embed_key, label_key, k = 15,
 	sc.pp.neighbors(adata_copy, use_rep=embed_key, key_added = neighbor_key, n_neighbors = k, copy = False)
 
 	cluster_keys = [f'{embed_key}_{cluster_method}' for cluster_method in cluster_methods]
-    for i in range(len(cluster_methods)):
-    	cluster_key = cluster_keys[i]
+	for i in range(len(cluster_methods)):
+		cluster_key = cluster_keys[i]
 
     	# message if throwing error
-    	if cluster_key in adata_copy.obs.columns:
-        	if force:
-            	print(
-                	f"WARNING: cluster key {cluster_key} already exists in adata.obs and will be overwritten because "
-                	"force=True "
-            	)
-        	else:
-            	raise ValueError(
-                	f"cluster key {cluster_key} already exists in adata, please remove the key or choose a different "
-                	"name. If you want to force overwriting the key, specify `force=True` "
-            	)
+		if cluster_key in adata_copy.obs.columns:
+			if force:
+				print(
+					f"WARNING: cluster key {cluster_key} already exists in adata.obs and will be overwritten because "
+					"force=True "
+				)
+			else:
+				raise ValueError(
+					f"cluster key {cluster_key} already exists in adata, please remove the key or choose a different "
+					"name. If you want to force overwriting the key, specify `force=True` "
+				)
 
         # add clusterings to data
 		if(cluster_methods[i] == 'kmeans'):
@@ -140,81 +122,64 @@ def calc_batch_metrics(adata, embed_key,
 		batch_metrics['graph_connectivity'] = scib.me.graph_connectivity(adata_copy, label_key=label_key)
 		print('Graph connectivity score:', batch_metrics['graph_connectivity'])
 	return batch_metrics
-##########################
-# imputation functions # from scVI replication code
-def dropout(X, rate=0.1):
-    """
-    X: original testing set
-    ========
-    returns:
-    X_zero: copy of X with zeros
-    i, j, ix: indices of where dropout is applied
-    """
-    X_zero = np.copy(X)
-    # select non-zero subset
-    i,j = np.nonzero(X_zero)
+# ##########################
+# # imputation functions # from scVI replication code
+# def dropout(X, rate=0.1):
+#     """
+#     X: original testing set
+#     ========
+#     returns:
+#     X_zero: copy of X with zeros
+#     i, j, ix: indices of where dropout is applied
+#     """
+#     X_zero = np.copy(X)
+#     # select non-zero subset
+#     i,j = np.nonzero(X_zero)
     
-    # choice number 1 : select 10 percent of the non zero values (so that distributions overlap enough)
-    ix = np.random.choice(range(len(i)), int(np.floor(0.1 * len(i))), replace=False)
-    X_zero[i[ix], j[ix]] *= np.random.binomial(1, rate)
+#     # choice number 1 : select 10 percent of the non zero values (so that distributions overlap enough)
+#     ix = np.random.choice(range(len(i)), int(np.floor(0.1 * len(i))), replace=False)
+#     X_zero[i[ix], j[ix]] *= np.random.binomial(1, rate)
        
-    # choice number 2, focus on a few but corrupt binomially
-    #ix = np.random.choice(range(len(i)), int(slice_prop * np.floor(len(i))), replace=False)
-    #X_zero[i[ix], j[ix]] = np.random.binomial(X_zero[i[ix], j[ix]].astype(np.int), rate)
-    return X_zero, i, j, ix
+#     # choice number 2, focus on a few but corrupt binomially
+#     #ix = np.random.choice(range(len(i)), int(slice_prop * np.floor(len(i))), replace=False)
+#     #X_zero[i[ix], j[ix]] = np.random.binomial(X_zero[i[ix], j[ix]].astype(np.int), rate)
+#     return X_zero, i, j, ix
 
-# IMPUTATION METRICS
-def imputation_error(X_mean, X, X_zero, i, j, ix):
-    """
-    X_mean: imputed dataset
-    X: original dataset
-    X_zero: zeros dataset
-    i, j, ix: indices of where dropout was applied
-    ========
-    returns:
-    median L1 distance between datasets at indices given
-    """
-    all_index = i[ix], j[ix]
-    x, y = X_mean[all_index], X[all_index]
-    return np.median(np.abs(x - y))
-##########################
-# wrapper function:
+# # IMPUTATION METRICS
+# def imputation_error(X_mean, X, X_zero, i, j, ix):
+#     """
+#     X_mean: imputed dataset
+#     X: original dataset
+#     X_zero: zeros dataset
+#     i, j, ix: indices of where dropout was applied
+#     ========
+#     returns:
+#     median L1 distance between datasets at indices given
+#     """
+#     all_index = i[ix], j[ix]
+#     x, y = X_mean[all_index], X[all_index]
+#     return np.median(np.abs(x - y))
+# ##########################
+# # wrapper function:
 
-# # adapted from scvi replicating expts benchmarking.py
-# def entropy_batch_mixing(adata, label_key, embed, batches):
-#     def entropy(hist_data):
-#         n_batches = len(np.unique(hist_data))
-#         if n_batches > 2:
-#             raise ValueError("Should be only two clusters for this metric")
-#         frequency = np.mean(hist_data == 1)
-#         if frequency == 0 or frequency == 1:
-#             return 0
-#         return -frequency * np.log(frequency) - (1 - frequency) * np.log(1 - frequency)
+# # # adapted from scvi replicating expts benchmarking.py
+# # def entropy_batch_mixing(adata, label_key, embed, batches):
+# #     def entropy(hist_data):
+# #         n_batches = len(np.unique(hist_data))
+# #         if n_batches > 2:
+# #             raise ValueError("Should be only two clusters for this metric")
+# #         frequency = np.mean(hist_data == 1)
+# #         if frequency == 0 or frequency == 1:
+# #             return 0
+# #         return -frequency * np.log(frequency) - (1 - frequency) * np.log(1 - frequency)
 
-#     nne = NearestNeighbors(n_neighbors=51)
-#     nne.fit(adata[embed])
-#     kmatrix = nne.kneighbors_graph(latent_space) - scipy.sparse.identity(latent_space.shape[0])
+# #     nne = NearestNeighbors(n_neighbors=51)
+# #     nne.fit(adata[embed])
+# #     kmatrix = nne.kneighbors_graph(latent_space) - scipy.sparse.identity(latent_space.shape[0])
 
-#     score = 0
-#     for t in range(50):
-#         indices = np.random.choice(np.arange(latent_space.shape[0]), size=100)
-#         score += np.mean([entropy(batches[kmatrix[indices].nonzero()[1]\
-#                                  [kmatrix[indices].nonzero()[0] == i]]) for i in range(100)])
-#     return score / 50.
-
-##########################
-# testing
-adata = sc.read_h5ad(data_dir + "Stephenson.subsample.100k.h5ad")
-adata_ref = adata.copy()
-
-linear_scvi = scvi.model.LinearSCVI.load('models/linearSCVI.pt', adata_ref) 
-adata_ref.obsm["X_linear_scVI"] = linear_scvi.get_latent_representation()
-adata.obsm["X_linear_scVI"] = linear_scvi.get_latent_representation(adata_ref)
-
-# gplvm = torch.load_#
-linear_scVI_batch_metrics = calc_bio_metrics(adata, embed_key = 'X_linear_scVI', batch_key = 'Site', label_key = 'harmonized_celltype')
-
-nonlinear_nb_scVI_batch_metrics = calc_batch_metrics(adata, embed_key = 'X_nonlinear_nb_scVI', batch_key = 'Site', label_key = 'harmonized_celltype')
-
-
-
+# #     score = 0
+# #     for t in range(50):
+# #         indices = np.random.choice(np.arange(latent_space.shape[0]), size=100)
+# #         score += np.mean([entropy(batches[kmatrix[indices].nonzero()[1]\
+# #                                  [kmatrix[indices].nonzero()[0] == i]]) for i in range(100)])
+# #     return score / 50.

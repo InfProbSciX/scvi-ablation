@@ -21,28 +21,37 @@ adata = sc.read_h5ad(data_dir + "Stephenson.subsample.100k.h5ad")
 ######################################
 # inialialize scvi encoder + linear gplvm model
 import gpytorch
-from model import GPLVM, LatentVariable, VariationalELBO, trange, BatchIdx, _KL, GaussianLikelihood
+from tqdm import trange
+from model import GPLVM, LatentVariable, VariationalELBO, BatchIdx, _KL
 from utils.preprocessing import setup_from_anndata
 from scvi.distributions import NegativeBinomial, ZeroInflatedNegativeBinomial
+from gpytorch.likelihoods import GaussianLikelihood
 from torch.distributions import LogNormal
 # import metrics
 
 softplus = torch.nn.Softplus()
 softmax = torch.nn.Softmax(-1)
 
+## define likelihoods ##
 class NBLikelihood(gpytorch.likelihoods._OneDimensionalLikelihood):
-    def __init__(self, d):
+    def __init__(self, d, learn_scale, learn_theta):
         super().__init__()
-        # self.log_theta = torch.nn.Parameter(torch.ones(d)) # learned theta
+        self.log_theta = torch.nn.Parameter(torch.ones(d)) # learned theta
+        self.learn_scale = learn_scale
+        self.learn_theta = learn_theta
 
     def forward(self, function_samples, **kwargs):
-        # scale = kwargs['scale'][:, 0] # set to S_l, learned scaling factor
-        scale = 1 # fixed scale = 1
-
         fs = function_samples.softmax(dim=-1) 
 
-        # theta = self.log_theta.exp()[:, None] # learned theta
-        theta = 1 # fixed theta = 1
+        if(self.learn_scale):
+            scale = kwargs['scale'][:, 0] # set to S_l, learned scaling factor
+        else:
+            scale = 1 # fixed scale = 1
+
+        if(self.learn_theta):
+            theta = self.log_theta.exp()[:, None] # learned theta
+        else:
+            theta = 1
         
         return NegativeBinomial(
             mu=scale * fs,
@@ -54,25 +63,25 @@ class NBLikelihood(gpytorch.likelihoods._OneDimensionalLikelihood):
         log_prob = self.quadrature(log_prob_lambda, function_dist)
         return log_prob
 
+## define encoders ##
 class ScalyEncoder(LatentVariable):
     """ KL added for both q_x and q_l"""
-    def __init__(self, latent_dim, input_dim):
+    def __init__(self, latent_dim, input_dim, learn_scale):
         super().__init__()
         self.latent_dim = latent_dim
         self.input_dim = input_dim
-
-        self._added_loss_terms['x_kl'] = None
-        # self._added_loss_terms['l_kl'] = None
+        self.learn_scale = learn_scale
         
         self.prior_x = NormalPrior(                 # prior for latent variable
             torch.zeros(1, latent_dim),
             torch.ones(1, latent_dim))
         
-        # self.prior_l = LogNormal(loc=0, scale=1)    # prior for scaling factor, may need to change with empirical mean and variance
+        if(self.learn_scale):
+            self.prior_l = LogNormal(loc=0, scale=1)    # prior for scaling factor, may need to change with empirical mean and variance
         
-        
-        self.register_added_loss_term("x_kl")    # register added loss terms 
-        self.register_added_loss_term("l_kl")
+        # self.register_added_loss_term("x_kl")    # register added loss terms
+        if(self.learn_scale): 
+            self.register_added_loss_term("l_kl")
 
         self.z_nnet = torch.nn.Sequential(          # NN for latent variables
             torch.nn.Linear(input_dim, 128),
@@ -84,99 +93,180 @@ class ScalyEncoder(LatentVariable):
             torch.nn.Linear(128, latent_dim*2),
         )
 
-        # self.l_nnet = torch.nn.Sequential(          # NN for scaling factor
-        #     torch.nn.Linear(input_dim, 128),
-        #     torch.nn.ReLU(),
-        #     torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001),
-        #     torch.nn.Linear(128, 128),
-        #     torch.nn.ReLU(),
-        #     torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001),
-        #     torch.nn.Linear(128, 1*2),
-        # )
+        if(self.learn_scale):
+            self.l_nnet = torch.nn.Sequential(          # NN for scaling factor
+                torch.nn.Linear(input_dim, 128),
+                torch.nn.ReLU(),
+                torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001),
+                torch.nn.Linear(128, 128),
+                torch.nn.ReLU(),
+                torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001),
+                torch.nn.Linear(128, 1*2),
+            )
 
     def forward(self, Y=None, X_covars=None):
         z_params = self.z_nnet(torch.cat([Y, X_covars], axis=1))
-        # l_params = self.l_nnet(torch.cat([Y, X_covars], axis=1))
 
         q_x = torch.distributions.Normal(
             z_params[..., :self.latent_dim],
             softplus(z_params[..., self.latent_dim:]) + 1e-4
         )
-        # q_l = torch.distributions.LogNormal(
-        #     l_params[..., :1].tanh()*10,
-        #     l_params[..., 1:].sigmoid()*10 + 1e-4
-        # )
+
         ## Adding KL(q|p) loss term 
         x_kl = _KL(q_x, self.prior_x, Y.shape[0], self.input_dim)
         self.update_added_loss_term('x_kl', x_kl)
         
-        # l_kl = _KL(q_l, self.prior_l, Y.shape[0], self.input_dim)
-        # self.update_added_loss_term('l_kl', l_kl)
-        
-        return q_x.rsample() #, q_l.rsample()
 
-def train(gplvm, likelihood, Y, epochs=100, batch_size=100, lr=0.01):
+        if(self.learn_scale):
+            l_params = self.l_nnet(torch.cat([Y, X_covars], axis=1))
+            
+            q_l = torch.distributions.LogNormal(
+                l_params[..., :1].tanh()*10,
+                l_params[..., 1:].sigmoid()*10 + 1e-4
+            )   
+
+            ## Adding KL(q|p) loss term 
+            l_kl = _KL(q_l, self.prior_l, Y.shape[0], self.input_dim)
+            self.update_added_loss_term('l_kl', l_kl)
+        
+        if(self.learn_scale):
+            return q_x.rsample(), q_l.rsample()
+        return q_x.rsample()
+
+
+## define training and validation functions
+def evaluate(gplvm, likelihood, Y, learn_scale, val_indices, batch_size):
+    n_val = len(val_indices)
+
+    val_elbo_func = VariationalELBO(likelihood, gplvm, num_data=n_val)
+
+    val_iterator = trange(int(np.ceil(n_val/batch_size)), leave = False)
+    val_idx = BatchIdx(n_val, batch_size).idx()
+
+    val_loss = 0
+    with torch.no_grad():
+        gplvm.eval()
+        gplvm.X_latent.eval()
+        for i in val_iterator:
+            batch_index = val_indices[next(val_idx)]
+            try:
+                # ---------------------------------
+                Y_batch = Y[batch_index]
+                if(learn_scale):
+                    X_l, S_l = gplvm.X_latent(Y_batch, gplvm.X_covars[batch_index])
+                else:
+                    X_l = gplvm.X_latent(Y_batch, gplvm.X_covars[batch_index])   
+                X_sample = torch.cat((X_l, gplvm.X_covars[batch_index]), axis=1)
+                gplvm_dist = gplvm(X_sample)
+                if(learn_scale):
+                    val_loss += -val_elbo_func(gplvm_dist, Y_batch.T, scale=S_l).sum() * len(batch_index)
+                else:
+                    val_loss += -val_elbo_func(gplvm_dist, Y_batch.T).sum() * len(batch_index)     
+                # ---------------------------------
+            except:
+                from IPython.core.debugger import set_trace; set_trace()
+    return val_loss/n_val # dividing by n_val to keep it as roughly average loss per datapoint, rather than summing it all
+
+def train(gplvm, likelihood, Y, learn_scale, 
+            seed = 42, epochs=100, batch_size=100, lr=0.01, 
+            val_split = 0.2, eval_iter = 50):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+    # set up train and validation splits
     n = len(Y)
-    steps = int(np.ceil(epochs*n/batch_size))
-    elbo_func = VariationalELBO(likelihood, gplvm, num_data=n)
+    indices = list(range(n))
+    np.random.shuffle(indices)
+    split = int(np.floor(val_split * n))
+    train_indices, val_indices = indices[split:], indices[:split]
+    train_indices = np.array(train_indices)
+    val_indices = np.array(val_indices)
+
+    n_train = len(train_indices)
+    train_steps = int(np.ceil(epochs*n_train/batch_size))
+    
+    elbo_func = VariationalELBO(likelihood, gplvm, num_data=n_train)
     optimizer = torch.optim.Adam([
         dict(params=gplvm.parameters(), lr=lr),
         dict(params=likelihood.parameters(), lr=lr)
     ])
 
-    losses = []; idx = BatchIdx(n, batch_size).idx()
-    iterator = trange(steps, leave=False)
-    for i in iterator:
-        batch_index = next(idx)
+    train_losses = []; val_losses = []
+    train_idx = BatchIdx(n_train, batch_size).idx()
+    train_iterator = trange(train_steps, leave=False)
+    for i in train_iterator:
+        batch_index = train_indices[next(train_idx)]
         optimizer.zero_grad()
 
         try:
             # ---------------------------------
             Y_batch = Y[batch_index]
-            # X_l, S_l = gplvm.X_latent(Y_batch, gplvm.X_covars[batch_index])
-            X_l = gplvm.X_latent(Y_batch, gplvm.X_covars[batch_index])     # use this when scaling factor is not learned
+            if(learn_scale):
+                X_l, S_l = gplvm.X_latent(Y_batch, gplvm.X_covars[batch_index])
+            else:
+                X_l = gplvm.X_latent(Y_batch, gplvm.X_covars[batch_index])     # use this when scaling factor is not learned
             X_sample = torch.cat((X_l, gplvm.X_covars[batch_index]), axis=1)
             gplvm_dist = gplvm(X_sample)
-            # loss = -elbo_func(gplvm_dist, Y_batch.T, scale=S_l).sum()
-            loss = -elbo_func(gplvm_dist, Y_batch.T).sum()                 # use this when scaling factor is not learned
+            if(learn_scale):
+                train_loss = -elbo_func(gplvm_dist, Y_batch.T, scale=S_l).sum()
+            else:
+                train_loss = -elbo_func(gplvm_dist, Y_batch.T).sum()                 # use this when scaling factor is not learned
             # ---------------------------------
         except:
             from IPython.core.debugger import set_trace; set_trace()
-        losses.append(loss.item())
-        wandb.log({'loss': loss.item()})
-        iterator.set_description(f'L:{np.round(loss.item(), 2)}')
-        loss.backward()
+        train_losses.append(train_loss.item())
+        wandb.log({'train loss': train_loss.item()})
+        iter_descrip = f'L:{np.round(train_loss.item(), 2)}'
+
+        # check validation loss
+        if((val_split > 0) and (i % eval_iter == 0)):
+            val_loss = evaluate(gplvm, likelihood, Y, learn_scale, val_indices, batch_size)
+            val_losses.append(val_loss.item())
+            wandb.log({'validation loss': val_loss.item()})
+            iter_descrip = iter_descrip + f'; V:{np.round(val_loss.item(), 2)}'
+            gplvm.train()
+            gplvm.X_latent.train()
+
+        train_iterator.set_description(iter_descrip)
+        train_loss.backward()
         optimizer.step()
 
-    return losses
+    return train_losses, val_losses
 #############
 seed = 42
-torch.manual_seed(seed)
-np.random.seed(seed)
-random.seed(seed)
-
+X_cat_covars_keys = ['sample_id'] #, 'Site']
+X_cts_covars_keys = None
+X_covars_keys = X_cat_covars_keys 
 # load in data
 Y, X_covars = setup_from_anndata(adata, 
                                  layer='counts',
-                                 categorical_covariate_keys=['sample_id'], 
+                                 categorical_covariate_keys=X_cat_covars_keys,
                                  continuous_covariate_keys=None,
                                  scale_gex=False)
+# # normalize Y and log(x + 1) the counts
+# Y_normalized = Y / Y.sum(1, keepdim = True) * 10000
+# Y_log_normalized = torch.log(Y_normalized + 1)
+# Y = Y_log_normalized
 
 q = 10
 (n, d)= Y.shape
-period_scale = np.pi
-X_latent = ScalyEncoder(q, d + X_covars.shape[1])
+period_scale = np.Inf # no period/cell-cycle shenanigans
 
+learn_scale = False
+
+## Declare encoder ##
+X_latent = ScalyEncoder(q, d + X_covars.shape[1], learn_scale = learn_scale)
 # X_latent =  Linear1LayerEncoder(q, d + X_covars.shape[1])
 # X_latent =  Linear2LayerEncoder(q, d + X_covars.shape[1])
 # X_latent =  OneLayerEncoder(q, d + X_covars.shape[1])
 
+n_inducing = q + len(X_covars.T) + 1
 
 gplvm = GPLVM(n, d, q, 
               covariate_dim=len(X_covars.T),
-              # n_inducing=q + len(X_covars.T) + 1 + 30, #+1 ,  # TODO: larger inducing number shouldn't increase performance
-              n_inducing=q + len(X_covars.T) + 1,
-              period_scale=np.pi,
+              n_inducing=n_inducing,
+              period_scale=period_scale,
               X_latent=X_latent,
               X_covars=X_covars,
               pseudotime_dim=False)
@@ -185,9 +275,9 @@ gplvm.intercept = gpytorch.means.ConstantMean()
 gplvm.random_effect_mean = gpytorch.means.ZeroMean()
 gplvm.covar_module = gpytorch.kernels.LinearKernel(q + len(X_covars.T))
 
-likelihood = NBLikelihood(d)
-# likelihood = gpytorch.likelihoods.BernoulliLikelihood()
-# likelihood = GaussianLikelihood(batch_shape=gplvm.batch_shape)
+## Declare likelihood ##
+# likelihood = NBLikelihood(d, learn_scale = learn_scale, learn_theta = True)
+likelihood = GaussianLikelihood(batch_shape=gplvm.batch_shape)
 
 if torch.cuda.is_available():
     Y = Y.cuda()
@@ -197,28 +287,42 @@ if torch.cuda.is_available():
     gplvm.X_latent = gplvm.X_latent.cuda()
 
 # model_name = args.model_name
-changes = 'nblikelihood_theta1_scale1'
+changes = 'gaussianlikelihood_raw_counts_notrackingSite_novalidation_nopriorx'
 model_name = f'linear_gplvm_{changes}' 
+
+val_split = 0
+torch.manual_seed(seed)
+np.random.seed(seed)
+random.seed(seed)
 
 config = {
   "learning_rate": 0.005,
-  "epochs": 15, 
-  "batch_size": 300,
-  "likelihood": f'NBLikelihood({d}) with theta = 1 and scale = 1', #f'GaussianLikelihood(batch_shape={gplvm.batch_shape})'
+  "epochs": 30, 
+  "batch_size": 150,#300,
+  "likelihood": f'GaussianLikelihood(batch_shape={gplvm.batch_shape})',
   'X_latent': gplvm.X_latent,
   'n_inducing': q + len(X_covars.T) + 1,
   'covariate_dim': len(X_covars.T),
-  'period_scale': np.pi,
+  'validation_split': val_split,
+  'eval_iter': 100,
+  'period_scale': period_scale,
   'X_covars': X_covars,
+  'X_covar_keys': X_covars_keys,
   'pseudotime_dim': False,
-  'seed': 42,
-  'elbo_func': f'VariationalELBO(likelihood, gplvm, num_data={n}), learning inducing loc',
+  'seed': seed,
+  'elbo_func': f'VariationalELBO(likelihood, gplvm, num_data={n - int(np.floor(n*val_split))}), learning inducing loc',
   'gplvm': gplvm,
+  'learn_scale': learn_scale,
 }
 
 wandb.init(project="scvi-ablation", entity="ml-at-cl", name = model_name, config = config)
 
-losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y, lr=config['learning_rate'], epochs=config['epochs'], batch_size=config['batch_size']) 
+losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y,
+               epochs=config['epochs'], batch_size=config['batch_size'], lr=config['learning_rate']) 
+# losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y,seed = config['seed'], 
+#                 learn_scale = config['learn_scale'], 
+#                 val_split = config['validation_split'], eval_iter = config['eval_iter'], 
+#                 lr=config['learning_rate'], epochs=config['epochs'], batch_size=config['batch_size']) 
 
 
 # bio_metrics = torch.load('models/linear_gplvm_nblikelihood_learned_dispersion_bio_metrics.pt')
@@ -236,15 +340,22 @@ torch.cuda.empty_cache()
 import gc
 gc.collect()
 ######
-X_latent.load_state_dict(torch.load(f'models/{model_name}_state_dict.pt'))
-X_latent.eval()
+loading_in = False
+torch.manual_seed(seed)
+np.random.seed(seed)
+random.seed(seed)
 
-# # find X_latent means directly
-# z_params = gplvm.X_latent.z_nnet(torch.cat([Y, X_covars], axis=1))
-z_params = X_latent.z_nnet(torch.cat([Y, X_covars], axis=1))
+if(loading_in):
+    # model_name = f'{model_name}_3'
+    X_latent.load_state_dict(torch.load(f'models/{model_name}_state_dict.pt'))
+    X_latent.eval()
 
-# X_latent_dims =  z_params[..., :gplvm.X_latent.latent_dim]
-X_latent_dims = z_params[..., :X_latent.latent_dim]
+    z_params = X_latent.z_nnet(torch.cat([Y, X_covars], axis=1))
+    X_latent_dims = z_params [..., :X_latent.latent_dim]
+else:
+    z_params = gplvm.X_latent.z_nnet(torch.cat([Y, X_covars], axis=1))
+    X_latent_dims = z_params[..., :gplvm.X_latent.latent_dim]
+
 
 adata.obsm[f'X_{model_name}_latent'] = X_latent_dims.detach().numpy()
 
@@ -267,7 +378,7 @@ adata.obsm[f'X_{model_name}_latent'] = X_latent_dims.detach().numpy()
 
 
 # # import metrics stuff
-import scib
+from utils.metrics import calc_batch_metrics, calc_bio_metrics
 batch_metrics = calc_batch_metrics(adata, embed_key = f'X_{model_name}_latent')#, metrics_list = [''])
 torch.save(batch_metrics, f'models/{model_name}_batch_metrics.pt')
 

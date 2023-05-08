@@ -1,6 +1,7 @@
 
 import torch
 import numpy as np
+import random
 import scanpy as sc
 
 import matplotlib.pyplot as plt
@@ -12,9 +13,9 @@ device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cp
 #####################################################################
 # Data Prep
 
-# import os, scvi
+import os, scvi
 
-# data_dir = "data/COVID_Stephenson/"
+data_dir = "data/COVID_Stephenson/"
 
 # if not os.path.exists(os.path.join(data_dir, "Stephenson.subsample.100k.h5ad")):
 #     os.makedirs(data_dir, exist_ok=True)
@@ -180,17 +181,24 @@ from model import GPLVM, LatentVariable, VariationalELBO, trange, BatchIdx, Poin
 from utils.preprocessing import setup_from_anndata
 from scvi.distributions import NegativeBinomial
 
+X_covars_keys = ['sample_id']
 Y, X_covars = setup_from_anndata(adata, 
                                  layer='counts',
-                                 categorical_covariate_keys=['sample_id'], 
+                                 categorical_covariate_keys=X_covars_keys, 
                                  continuous_covariate_keys=None,
                                  scale_gex=False)
-Y[Y > 100] = 100 # TODO: capping this because numerical issues (think relu millions = millions, exponentiate leads to exploding numbers)
+# normalize Y and log(x + 1) the counts
+Y_normalized = Y / Y.sum(1, keepdim = True) * 10000
+Y_log_normalized = torch.log(Y_normalized + 1)
+Y = Y_log_normalized
 
 q = 10
+(n, d), q = Y.shape, q
 seed = 42
 
 torch.manual_seed(seed)
+np.random.seed(seed)
+random.seed(seed)
 
 X_latent = NNEncoder(n, q, d, (128, 128))
 
@@ -212,68 +220,136 @@ if torch.cuda.is_available():
     gplvm.X_covars = gplvm.X_covars.cuda()
     likelihood = likelihood.cuda()
 
+## define training and validation functions
+def evaluate(gplvm, likelihood, Y, val_indices, batch_size):
+    n_val = len(val_indices)
 
-def train(gplvm, likelihood, Y, epochs=100, batch_size=100, lr=0.005):
+    val_elbo_func = VariationalELBO(likelihood, gplvm, num_data=n_val)
 
+    val_iterator = trange(int(np.ceil(n_val/batch_size)), leave = False)
+    val_idx = BatchIdx(n_val, batch_size).idx()
+
+    val_loss = 0
+    with torch.no_grad():
+        gplvm.eval()
+        gplvm.X_latent.eval()
+        for i in val_iterator:
+            batch_index = val_indices[next(val_idx)]
+            try:
+                # ---------------------------------
+                Y_batch = Y[batch_index]
+                X_l = gplvm.X_latent(Y = Y_batch)
+                X_sample = torch.cat((X_l, gplvm.X_covars[batch_index]), axis=1)
+                gplvm_dist = gplvm(X_sample)
+                val_loss += -val_elbo_func(gplvm_dist, Y_batch.T).sum() * len(batch_index)     
+                # ---------------------------------
+            except:
+                from IPython.core.debugger import set_trace; set_trace()
+    return val_loss/n_val # dividing by n_val to keep it as roughly average loss per datapoint, rather than summing it all
+
+def train(gplvm, likelihood, Y, 
+            seed = 42, epochs=100, batch_size=100, lr=0.01, 
+            val_split = 0.2, eval_iter = 50):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+    # set up train and validation splits
     n = len(Y)
-    steps = int(np.ceil(epochs*n/batch_size))
-    elbo_func = VariationalELBO(likelihood, gplvm, num_data=n)
+    indices = list(range(n))
+    np.random.shuffle(indices)
+    split = int(np.floor(val_split * n))
+    train_indices, val_indices = indices[split:], indices[:split]
+    train_indices = np.array(train_indices)
+    val_indices = np.array(val_indices)
+
+    n_train = len(train_indices)
+    train_steps = int(np.ceil(epochs*n_train/batch_size))
+    
+    elbo_func = VariationalELBO(likelihood, gplvm, num_data=n_train)
     optimizer = torch.optim.Adam([
         dict(params=gplvm.parameters(), lr=lr),
         dict(params=likelihood.parameters(), lr=lr)
     ])
 
-    losses = []; idx = BatchIdx(n, batch_size).idx()
-    iterator = trange(steps, leave=False)
-    for i in iterator:
-        batch_index = next(idx)
+    train_losses = []; val_losses = []
+    train_idx = BatchIdx(n_train, batch_size).idx()
+    train_iterator = trange(train_steps, leave=False)
+    for i in train_iterator:
+        batch_index = train_indices[next(train_idx)]
         optimizer.zero_grad()
 
-        # ---------------------------------
-        Y_batch = Y[batch_index]
-        X_sample = torch.cat((
-                gplvm.X_latent(batch_index, Y_batch),
-                gplvm.X_covars[batch_index]
-            ), axis=1)
-        gplvm_dist = gplvm(X_sample)
-        loss = -elbo_func(gplvm_dist, Y_batch.T).sum()
-        # ---------------------------------
+        try:
+            # ---------------------------------
+            Y_batch = Y[batch_index]
+            X_l = gplvm.X_latent(Y = Y_batch)    
+            X_sample = torch.cat((X_l, gplvm.X_covars[batch_index]), axis=1)
+            gplvm_dist = gplvm(X_sample)
+            train_loss = -elbo_func(gplvm_dist, Y_batch.T).sum()                 
+            # ---------------------------------
+        except:
+            from IPython.core.debugger import set_trace; set_trace()
+        train_losses.append(train_loss.item())
+        wandb.log({'train loss': train_loss.item()})
+        iter_descrip = f'L:{np.round(train_loss.item(), 2)}'
 
-        losses.append(loss.item())
-        wandb.log({'loss': loss.item()})
-        iterator.set_description(f'L:{np.round(loss.item(), 2)}')
-        loss.backward()
+        # check validation loss
+        if((val_split > 0) and (i % eval_iter == 0)):
+            val_loss = evaluate(gplvm, likelihood, Y, val_indices, batch_size)
+            val_losses.append(val_loss.item())
+            wandb.log({'validation loss': val_loss.item()})
+            iter_descrip = iter_descrip + f'; V:{np.round(val_loss.item(), 2)}'
+            gplvm.train()
+            gplvm.X_latent.train()
+
+        train_iterator.set_description(iter_descrip)
+        train_loss.backward()
         optimizer.step()
 
-    return losses
+    return train_losses, val_losses
 
-model_name = f'original_amortized_gplvm' 
+
+model_name = f'original_amortized_gplvm_libraryandlognormalized'
+
+val_split = 0.2
+seed = 42
+torch.manual_seed(seed)
+np.random.seed(seed)
+random.seed(seed)
 
 config = {
   "learning_rate": 0.005,
-  "epochs": 30,
-  "batch_size": 150,
+  "epochs": 30, 
+  "batch_size": 300,
   "likelihood": f'GaussianLikelihood(batch_shape={gplvm.batch_shape})',
-  'X_latent': f'NNEncoder({n}, {q}, {d}, (128, 128))',
+  'X_latent': gplvm.X_latent,
   'n_inducing': q + len(X_covars.T) + 1,
   'covariate_dim': len(X_covars.T),
-  'period_scale': np.pi,
+  'validation_split': val_split,
+  'eval_iter': 100,
+  'period_scale': period_scale,
   'X_covars': X_covars,
+  'X_covar_keys': X_covars_keys,
   'pseudotime_dim': False,
-  'seed': 42,
-  'elbo_func': f'VariationalELBO(likelihood, gplvm, num_data={n})'
+  'seed': seed,
+  'elbo_func': f'VariationalELBO(likelihood, gplvm, num_data={n - int(np.floor(n*val_split))}), learning inducing loc',
+  'gplvm': gplvm,
 }
 
 wandb.init(project="scvi-ablation", entity="ml-at-cl", name = model_name, config = config)
 
 losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y,
-               epochs=config['epochs'], batch_size=config['batch_size'], lr=config['learning_rate']) # 27min
+               epochs=config['epochs'], batch_size=config['batch_size'], lr=config['learning_rate']) # 35min
 
 
 # if os.path.exists('latent_sd.pt'):
 torch.save(losses, f'models/{model_name}_losses.pt')
 torch.save(gplvm.X_latent.state_dict(), f'models/{model_name}_statedict.pt')
 # X_latent = ScalyEncoder(q, d + X_covars.shape[1]) 
+
+
+X_latent.load_state_dict(torch.load(f'models/{model_name}_state_dict.pt'))
+X_latent.eval()
 
 #-- plotting --
 # find X_latent means directly
@@ -285,8 +361,8 @@ X_latent_dims =  z_params[..., :gplvm.X_latent.latent_dim].tanh()*5
 
 adata.obsm[f'X_{model_name}_latent'] = X_latent_dims.detach().cpu().numpy()
 
-
-bio_metrics, __ = calc_bio_metrics(adata, embed_key = f'X_{model_name}_latent')
+from utils.metrics import calc_batch_metrics, calc_bio_metrics
+bio_metrics = calc_bio_metrics(adata, embed_key = f'X_{model_name}_latent')
 torch.save(bio_metrics, f'models/{model_name}_bio_metrics.pt')
 
 batch_metrics = calc_batch_metrics(adata, embed_key = f'X_{model_name}_latent')
@@ -299,6 +375,41 @@ adata.obsm[f'X_umap_{model_name}'] = adata.obsm['X_umap'].copy()
 plt.rcParams['figure.figsize'] = [10,10]
 col_obs = ['harmonized_celltype', 'Site']
 sc.pl.embedding(adata, f'X_umap_{model_name}', color = col_obs, legend_loc='on data', size=5)
+
+# def train(gplvm, likelihood, Y, epochs=100, batch_size=100, lr=0.005):
+
+#     n = len(Y)
+#     steps = int(np.ceil(epochs*n/batch_size))
+#     elbo_func = VariationalELBO(likelihood, gplvm, num_data=n)
+#     optimizer = torch.optim.Adam([
+#         dict(params=gplvm.parameters(), lr=lr),
+#         dict(params=likelihood.parameters(), lr=lr)
+#     ])
+
+#     losses = []; idx = BatchIdx(n, batch_size).idx()
+#     iterator = trange(steps, leave=False)
+#     for i in iterator:
+#         batch_index = next(idx)
+#         optimizer.zero_grad()
+
+#         # ---------------------------------
+#         Y_batch = Y[batch_index]
+#         X_sample = torch.cat((
+#                 gplvm.X_latent(batch_index, Y_batch),
+#                 gplvm.X_covars[batch_index]
+#             ), axis=1)
+#         gplvm_dist = gplvm(X_sample)
+#         loss = -elbo_func(gplvm_dist, Y_batch.T).sum()
+#         # ---------------------------------
+
+#         losses.append(loss.item())
+#         wandb.log({'loss': loss.item()})
+#         iterator.set_description(f'L:{np.round(loss.item(), 2)}')
+#         loss.backward()
+#         optimizer.step()
+
+#     return losses
+
 
 #####################################################################
 # Linear GPLVM Run
@@ -316,6 +427,7 @@ Y, X_covars = setup_from_anndata(adata,
 Y[Y > 100] = 100 # TODO: capping this because numerical issues (think relu millions = millions, exponentiate leads to exploding numbers)
 
 q = 10
+(n, d), q = Y.shape, q
 seed = 42
 
 torch.manual_seed(seed)

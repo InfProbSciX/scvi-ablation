@@ -186,7 +186,6 @@ def train(gplvm, likelihood, Y, epochs=100, batch_size=100, lr=0.005):
 
     return losses
 
-
 class NNEncoder(LatentVariable):    
     def __init__(self, n, latent_dim, data_dim, layers):
         super().__init__()
@@ -225,6 +224,115 @@ class NNEncoder(LatentVariable):
         self.update_added_loss_term('x_kl', x_kl)
         return q_x.rsample()
 
+class ScalyEncoder(LatentVariable):
+    """ KL added for both q_x and q_l"""
+    def __init__(self, latent_dim, input_dim, learn_scale, Y): # n_layers, layer_type):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.input_dim = input_dim
+        self.learn_scale = learn_scale
+        
+        self.prior_x = NormalPrior(                 # prior for latent variable
+            torch.zeros(1, latent_dim),
+            torch.ones(1, latent_dim))
+        
+        if(self.learn_scale):
+            log_empirical_total_mean = float(torch.mean(torch.log(Y.sum(1))))
+            log_empirical_total_var = float(torch.std(torch.log(Y.sum(1))))
+            self.prior_l = LogNormal(loc=log_empirical_total_mean, scale=log_empirical_total_var)  
+
+        self.register_added_loss_term("x_kl")    # register added loss terms
+        if(self.learn_scale): 
+            self.register_added_loss_term("l_kl")
+
+        self.z_nnet = torch.nn.Sequential(          # NN for latent variables
+            torch.nn.Linear(input_dim, 128),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001), 
+            torch.nn.Linear(128, 128),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001),
+            torch.nn.Linear(128, latent_dim*2),
+        )
+
+        if(self.learn_scale):
+            self.l_nnet = torch.nn.Sequential(          # NN for scaling factor
+                torch.nn.Linear(input_dim, 128),
+                torch.nn.ReLU(),
+                torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001),
+                torch.nn.Linear(128, 128),
+                torch.nn.ReLU(),
+                torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001),
+                torch.nn.Linear(128, 1*2),
+            )
+
+    def forward(self, Y=None, X_covars=None):
+        # z_params = self.z_nnet(torch.cat([Y, X_covars], axis=1))
+        z_params = self.z_nnet(Y)
+
+        q_x = torch.distributions.Normal(
+            z_params[..., :self.latent_dim],
+            softplus(z_params[..., self.latent_dim:]) + 1e-4
+        )
+
+        ## Adding KL(q|p) loss term 
+        x_kl = _KL(q_x, self.prior_x, Y.shape[0], self.input_dim)
+        self.update_added_loss_term('x_kl', x_kl)
+        
+
+        if(self.learn_scale):
+            l_params = self.l_nnet(torch.cat([Y, X_covars], axis=1))
+            
+            q_l = torch.distributions.LogNormal(
+                l_params[..., :1].tanh()*10,
+                l_params[..., 1:].sigmoid()*10 + 1e-4
+            )   
+
+            ## Adding KL(q|p) loss term 
+            l_kl = _KL(q_l, self.prior_l, Y.shape[0], self.input_dim)
+            self.update_added_loss_term('l_kl', l_kl)
+        
+        if(self.learn_scale):
+            return q_x.rsample(), q_l.rsample()
+        return q_x.rsample()
+
+# class NNEncoder(LatentVariable):    
+#     def __init__(self, n, latent_dim, data_dim, layers):
+#         super().__init__()
+#         self.n = n
+#         self.latent_dim = latent_dim
+#         self.prior_x = NormalPrior(
+#             torch.zeros(1, latent_dim),
+#             torch.ones(1, latent_dim))
+#         self.data_dim = data_dim
+#         self.latent_dim = latent_dim
+
+#         self._init_nnet(layers)
+#         self.register_added_loss_term("x_kl")
+
+#         self.jitter = torch.eye(latent_dim).unsqueeze(0)*1e-5
+
+#     def _init_nnet(self, hidden_layers):
+#         layers = (self.data_dim,) + hidden_layers + (self.latent_dim*2,)
+#         n_layers = len(layers)
+
+#         modules = []; last_layer = n_layers - 1
+#         for i in range(last_layer):
+#             modules.append(torch.nn.Linear(layers[i], layers[i + 1]))
+#             if i < last_layer - 1: modules.append(softplus)
+
+#         self.z_nnet = torch.nn.Sequential(*modules)
+
+#     def forward(self, batch_index=None, Y=None):
+#         h = self.z_nnet(Y)
+#         mu = h[..., :self.latent_dim].tanh()*5
+#         sg = softplus(h[..., self.latent_dim:]) + 1e-6 
+
+#         q_x = torch.distributions.Normal(mu, sg)
+
+#         x_kl = _KL(q_x, self.prior_x, len(mu), self.data_dim)
+#         self.update_added_loss_term('x_kl', x_kl)
+#         return q_x.rsample()
 
 class _KL(AddedLossTerm):
     def __init__(self, q_x, p_x, n, d):
@@ -238,5 +346,34 @@ class _KL(AddedLossTerm):
         kl_per_point = kl_per_latent_dim.sum()/self.n
         return (kl_per_point/self.d)
 
+class NBLikelihood(gpytorch.likelihoods._OneDimensionalLikelihood):
+    def __init__(self, d, learn_scale, learn_theta):
+        super().__init__()
+        self.log_theta = torch.nn.Parameter(torch.ones(d)) # learned theta
+        self.learn_scale = learn_scale
+        self.learn_theta = learn_theta
 
-__all__ = ['GPLVM', 'PointLatentVariable', 'NNEncoder', 'BatchIdx', 'train']
+    def forward(self, function_samples, **kwargs):
+        fs = function_samples.softmax(dim=-1) 
+
+        if(self.learn_scale):
+            scale = kwargs['scale'][:, 0] # set to S_l, learned scaling factor
+        else:
+            scale = 1 # fixed scale = 1
+
+        if(self.learn_theta):
+            theta = self.log_theta.exp()[:, None] # learned theta
+        else:
+            theta = 1
+        
+        return NegativeBinomial(
+            mu=scale * fs,
+            theta = theta,
+        )
+
+    def expected_log_prob(self, observations, function_dist, *args, **kwargs):
+        log_prob_lambda = lambda function_samples: self.forward(function_samples, **kwargs).log_prob(observations)
+        log_prob = self.quadrature(log_prob_lambda, function_dist)
+        return log_prob
+
+__all__ = ['GPLVM', 'PointLatentVariable', 'NNEncoder', 'BatchIdx'] # 'train']

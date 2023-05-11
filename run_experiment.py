@@ -5,15 +5,15 @@ import random
 
 import argparse
 import wandb
-
 import matplotlib.pyplot as plt
+plt.ion(); plt.style.use('seaborn-pastel')
+
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 ######################################
 # Load in prepped data
 
 import os, scvi
-from gpytorch.priors import NormalPrior
 
 data_dir = "data/COVID_Stephenson/"
 adata = sc.read_h5ad(data_dir + "Stephenson.subsample.100k.h5ad")
@@ -22,12 +22,13 @@ adata = sc.read_h5ad(data_dir + "Stephenson.subsample.100k.h5ad")
 # inialialize scvi encoder + linear gplvm model
 import gpytorch
 from tqdm import trange
-from model import GPLVM, LatentVariable, VariationalELBO, BatchIdx, _KL
+from model import GPLVM, LatentVariable, VariationalELBO, BatchIdx, _KL, PointLatentVariable
 from utils.preprocessing import setup_from_anndata
 from scvi.distributions import NegativeBinomial, ZeroInflatedNegativeBinomial
 from gpytorch.likelihoods import GaussianLikelihood
+from gpytorch.priors import NormalPrior
 from torch.distributions import LogNormal
-# import metrics
+
 
 softplus = torch.nn.Softplus()
 softmax = torch.nn.Softmax(-1)
@@ -66,7 +67,7 @@ class NBLikelihood(gpytorch.likelihoods._OneDimensionalLikelihood):
 ## define encoders ##
 class ScalyEncoder(LatentVariable):
     """ KL added for both q_x and q_l"""
-    def __init__(self, latent_dim, input_dim, learn_scale):
+    def __init__(self, latent_dim, input_dim, learn_scale, Y): # n_layers, layer_type):
         super().__init__()
         self.latent_dim = latent_dim
         self.input_dim = input_dim
@@ -77,9 +78,11 @@ class ScalyEncoder(LatentVariable):
             torch.ones(1, latent_dim))
         
         if(self.learn_scale):
-            self.prior_l = LogNormal(loc=0, scale=1)    # prior for scaling factor, may need to change with empirical mean and variance
-        
-        # self.register_added_loss_term("x_kl")    # register added loss terms
+            log_empirical_total_mean = float(torch.mean(torch.log(Y.sum(1))))
+            log_empirical_total_var = float(torch.std(torch.log(Y.sum(1))))
+            self.prior_l = LogNormal(loc=log_empirical_total_mean, scale=log_empirical_total_var)  
+
+        self.register_added_loss_term("x_kl")    # register added loss terms
         if(self.learn_scale): 
             self.register_added_loss_term("l_kl")
 
@@ -105,7 +108,8 @@ class ScalyEncoder(LatentVariable):
             )
 
     def forward(self, Y=None, X_covars=None):
-        z_params = self.z_nnet(torch.cat([Y, X_covars], axis=1))
+        # z_params = self.z_nnet(torch.cat([Y, X_covars], axis=1))
+        z_params = self.z_nnet(Y)
 
         q_x = torch.distributions.Normal(
             z_params[..., :self.latent_dim],
@@ -203,9 +207,12 @@ def train(gplvm, likelihood, Y, learn_scale,
             # ---------------------------------
             Y_batch = Y[batch_index]
             if(learn_scale):
-                X_l, S_l = gplvm.X_latent(Y_batch, gplvm.X_covars[batch_index])
+                # X_l, S_l = gplvm.X_latent(Y_batch, gplvm.X_covars[batch_index])
+                X_l, S_l = gplvm.X_latent(Y_batch)
             else:
-                X_l = gplvm.X_latent(Y_batch, gplvm.X_covars[batch_index])     # use this when scaling factor is not learned
+                # X_l = gplvm.X_latent(Y_batch, gplvm.X_covars[batch_index])     # use this when scaling factor is not learned
+                # X_l = gplvm.X_latent(Y_batch)
+                X_l = gplvm.X_latent(batch_index = batch_index, Y = Y)
             X_sample = torch.cat((X_l, gplvm.X_covars[batch_index]), axis=1)
             gplvm_dist = gplvm(X_sample)
             if(learn_scale):
@@ -234,8 +241,7 @@ def train(gplvm, likelihood, Y, learn_scale,
 
     return train_losses, val_losses
 #############
-seed = 42
-X_cat_covars_keys = ['sample_id'] #, 'Site']
+X_cat_covars_keys = ['sample_id']
 X_cts_covars_keys = None
 X_covars_keys = X_cat_covars_keys 
 # load in data
@@ -247,16 +253,29 @@ Y, X_covars = setup_from_anndata(adata,
 # # normalize Y and log(x + 1) the counts
 # Y_normalized = Y / Y.sum(1, keepdim = True) * 10000
 # Y_log_normalized = torch.log(Y_normalized + 1)
-# Y = Y_log_normalized
+# Y_log = torch.log(Y + 1)
+# Y = Y_normalized
+# Y = Y_log
+# Y_log_transformed = torch.log(Y + 1) #torch.log(Y/100 + 1)
+# Y = Y_log_transformed/torch.std(Y_log_transformed, axis = 0) # don't need to consider mean because it's captured in Gaussian Likelihood
 
+
+seed = 42
+torch.manual_seed(seed)
+np.random.seed(seed)
+random.seed(seed)
 q = 10
 (n, d)= Y.shape
 period_scale = np.Inf # no period/cell-cycle shenanigans
 
 learn_scale = False
+learn_theta = True
 
 ## Declare encoder ##
-X_latent = ScalyEncoder(q, d + X_covars.shape[1], learn_scale = learn_scale)
+# X_latent = ScalyEncoder(q, d + X_covars.shape[1], learn_scale = learn_scale, Y= Y)
+# X_latent = ScalyEncoder(q, d , learn_scale = learn_scale, Y= Y)
+X_latent = PointLatentVariable(torch.randn(n, q))
+
 # X_latent =  Linear1LayerEncoder(q, d + X_covars.shape[1])
 # X_latent =  Linear2LayerEncoder(q, d + X_covars.shape[1])
 # X_latent =  OneLayerEncoder(q, d + X_covars.shape[1])
@@ -276,8 +295,8 @@ gplvm.random_effect_mean = gpytorch.means.ZeroMean()
 gplvm.covar_module = gpytorch.kernels.LinearKernel(q + len(X_covars.T))
 
 ## Declare likelihood ##
-# likelihood = NBLikelihood(d, learn_scale = learn_scale, learn_theta = True)
-likelihood = GaussianLikelihood(batch_shape=gplvm.batch_shape)
+likelihood = NBLikelihood(d, learn_scale = learn_scale, learn_theta = learn_theta)
+# likelihood = GaussianLikelihood(batch_shape=gplvm.batch_shape)
 
 if torch.cuda.is_available():
     Y = Y.cuda()
@@ -286,20 +305,33 @@ if torch.cuda.is_available():
     likelihood = likelihood.cuda()
     gplvm.X_latent = gplvm.X_latent.cuda()
 
-# model_name = args.model_name
-changes = 'gaussianlikelihood_raw_counts_notrackingSite_novalidation_nopriorx'
-model_name = f'linear_gplvm_{changes}' 
+# # model_name = args.model_name
+# changes = 'gaussianlikelihood_lognormalizedandstdstandardized'
+# model_name = 'gplvm_rawcounts_scaly_linear_sampleid_nocc_nblikelihood'
+# model_name = 'gplvm_rawcounts_scalynocovars_linear_sampleid_nocc_nblikelihood'
+model_name = 'gplvm_rawcounts_point_linear_sampleid_nocc_nblikelihood'
+if(learn_scale):
+    model_name = model_name + 'learnscale'
+else:
+    model_name = model_name + 'noscale'
+if(learn_theta):
+    model_name = model_name + 'learntheta'
+else:
+    model_name = model_name + 'fixedtheta1'
+
 
 val_split = 0
+
 torch.manual_seed(seed)
 np.random.seed(seed)
 random.seed(seed)
 
 config = {
   "learning_rate": 0.005,
-  "epochs": 30, 
-  "batch_size": 150,#300,
-  "likelihood": f'GaussianLikelihood(batch_shape={gplvm.batch_shape})',
+  "epochs": 15, 
+  "batch_size": 300,
+  'likelihood':f'NBLikelihood(d, learn_scale = {learn_scale}, learn_theta = {learn_theta})',
+  # "likelihood": f'GaussianLikelihood(batch_shape={gplvm.batch_shape})',#
   'X_latent': gplvm.X_latent,
   'n_inducing': q + len(X_covars.T) + 1,
   'covariate_dim': len(X_covars.T),
@@ -317,18 +349,21 @@ config = {
 
 wandb.init(project="scvi-ablation", entity="ml-at-cl", name = model_name, config = config)
 
-losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y,
-               epochs=config['epochs'], batch_size=config['batch_size'], lr=config['learning_rate']) 
-# losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y,seed = config['seed'], 
-#                 learn_scale = config['learn_scale'], 
-#                 val_split = config['validation_split'], eval_iter = config['eval_iter'], 
-#                 lr=config['learning_rate'], epochs=config['epochs'], batch_size=config['batch_size']) 
+# losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y,
+#                epochs=config['epochs'], batch_size=config['batch_size'], lr=config['learning_rate']) 
+losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y,seed = config['seed'], 
+                learn_scale = config['learn_scale'], 
+                val_split = config['validation_split'], eval_iter = config['eval_iter'], 
+                lr=config['learning_rate'], epochs=config['epochs'], batch_size=config['batch_size']) 
 
 
 # bio_metrics = torch.load('models/linear_gplvm_nblikelihood_learned_dispersion_bio_metrics.pt')
 
 torch.save(losses, f'models/{model_name}_losses.pt')
-torch.save(gplvm.X_latent.state_dict(), f'models/{model_name}_state_dict.pt')
+# torch.save(gplvm.X_latent.state_dict(), f'models/{model_name}_Xlatent_state_dict.pt')
+torch.save(gplvm.X_latent.X.detach(), f'models/{model_name}_X.pt')
+torch.save(gplvm.state_dict(), f'models/{model_name}_gplvm_state_dict.pt')
+
 
 Y = Y.cpu()
 X_covars = X_covars.cpu()
@@ -340,16 +375,20 @@ torch.cuda.empty_cache()
 import gc
 gc.collect()
 ######
-loading_in = False
+loading_in = True
 torch.manual_seed(seed)
 np.random.seed(seed)
 random.seed(seed)
+# model_name = ''
+model_name = 'original_amortized_gplvm_lognormalizedandstdstandardized'
+
 
 if(loading_in):
-    # model_name = f'{model_name}_3'
-    X_latent.load_state_dict(torch.load(f'models/{model_name}_state_dict.pt'))
-    X_latent.eval()
+    gplvm.X_latent.load_state_dict(torch.load(f'models/{model_name}_X_latent_state_dict.pt'))
+    gplvm.X_latent.eval()
+    gplvm.load_state_dict(torch.load(f'models/{model_name}_gplvm_state_dict.pt'))
 
+    # z_params = X_latent.nnet(Y)
     z_params = X_latent.z_nnet(torch.cat([Y, X_covars], axis=1))
     X_latent_dims = z_params [..., :X_latent.latent_dim]
 else:
@@ -359,15 +398,15 @@ else:
 
 adata.obsm[f'X_{model_name}_latent'] = X_latent_dims.detach().numpy()
 
-#-- plotting --
-# sc.pp.neighbors(adata, n_neighbors=50, use_rep=f'X_{model_name}_latent', key_added=f'X_{model_name}_k50')
-# sc.tl.umap(adata, neighbors_key=f'X_{model_name}_k50')
-# adata.obsm[f'X_umap_{model_name}'] = adata.obsm['X_umap'].copy()
+## -- plotting --
+sc.pp.neighbors(adata, n_neighbors=50, use_rep=f'X_{model_name}_latent', key_added=f'X_{model_name}_k50')
+sc.tl.umap(adata, neighbors_key=f'X_{model_name}_k50')
+adata.obsm[f'X_umap_{model_name}'] = adata.obsm['X_umap'].copy()
 
-# plt.rcParams['figure.figsize'] = [10,10]
-# col_obs = ['harmonized_celltype', 'Site']
-# sc.pl.embedding(adata, f'X_umap_{model_name}', color = col_obs, legend_loc='on data', size=5)
-#------
+plt.rcParams['figure.figsize'] = [10,10]
+col_obs = ['harmonized_celltype', 'Site']
+sc.pl.embedding(adata, f'X_umap_{model_name}', color = col_obs, legend_loc='on data', size=5)
+## ------
 # def test(adata, batch_key, label_key, embed_key):
 #     import ipdb; ipdb.set_trace()
 #     temp_score = scib.me.ilisi_graph(adata, batch_key=batch_key, type_="embed", use_rep=embed_key)
@@ -375,7 +414,7 @@ adata.obsm[f'X_{model_name}_latent'] = X_latent_dims.detach().numpy()
 #     return temp_score
 # test(adata, batch_key = 'Site', label_key = 'harmonized_celltype', embed_key =  f'X_{model_name}_latent')
 
-
+print(calc_rmse(gplvm, Y, n_trials = 1000))
 
 # # import metrics stuff
 from utils.metrics import calc_batch_metrics, calc_bio_metrics

@@ -4,8 +4,9 @@ import gpytorch
 import numpy as np
 from tqdm import trange
 
-from torch.distributions import Normal
+from torch.distributions import Normal, LogNormal
 from torch.distributions import kl_divergence
+from scvi.distributions import NegativeBinomial
 
 from gpytorch.mlls import VariationalELBO
 from gpytorch.constraints import Interval
@@ -213,7 +214,7 @@ class NNEncoder(LatentVariable):
 
         self.nnet = torch.nn.Sequential(*modules)
 
-    def forward(self, batch_index=None, Y=None):
+    def forward(self, Y=None):
         h = self.nnet(Y)
         mu = h[..., :self.latent_dim].tanh()*5
         sg = softplus(h[..., self.latent_dim:]) + 1e-6
@@ -237,9 +238,7 @@ class ScalyEncoder(LatentVariable):
             torch.ones(1, latent_dim))
         
         if(self.learn_scale):
-            log_empirical_total_mean = float(torch.mean(torch.log(Y.sum(1))))
-            log_empirical_total_var = float(torch.std(torch.log(Y.sum(1))))
-            self.prior_l = LogNormal(loc=log_empirical_total_mean, scale=log_empirical_total_var)  
+            self.prior_l = LogNormal(loc=0, scale=1)  
 
         self.register_added_loss_term("x_kl")    # register added loss terms
         if(self.learn_scale): 
@@ -267,8 +266,10 @@ class ScalyEncoder(LatentVariable):
             )
 
     def forward(self, Y=None, X_covars=None):
-        # z_params = self.z_nnet(torch.cat([Y, X_covars], axis=1))
-        z_params = self.z_nnet(Y)
+        if(X_covars is not None):
+            z_params = self.z_nnet(torch.cat([Y, X_covars], axis=1))
+        else:
+            z_params = self.z_nnet(Y)
 
         q_x = torch.distributions.Normal(
             z_params[..., :self.latent_dim],
@@ -281,12 +282,21 @@ class ScalyEncoder(LatentVariable):
         
 
         if(self.learn_scale):
-            l_params = self.l_nnet(torch.cat([Y, X_covars], axis=1))
-            
+            if(X_covars is not None):
+                l_params = self.l_nnet(torch.cat([Y, X_covars], axis=1))
+            else:
+                l_params = self.l_nnet(Y)
+                
             q_l = torch.distributions.LogNormal(
                 l_params[..., :1].tanh()*10,
                 l_params[..., 1:].sigmoid()*10 + 1e-4
-            )   
+            )
+            
+            row_sums = torch.sum(Y, dim=1)
+            
+            empirical_total_mean = torch.mean(row_sums)
+            empirical_total_var = torch.std(row_sums)
+            self.prior_l = LogNormal(loc = empirical_total_mean, scale = empirical_total_var)
 
             ## Adding KL(q|p) loss term 
             l_kl = _KL(q_l, self.prior_l, Y.shape[0], self.input_dim)

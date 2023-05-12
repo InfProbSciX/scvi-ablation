@@ -143,11 +143,17 @@ def main(args):
   adata.obsm[f'X_{model_name}_latent'] = X_latent_dims.detach().numpy()
 
   ## Calculating metrics ##
-  batch_metrics = calc_batch_metrics(adata, embed_key = f'X_{model_name}_latent', metrics_list = args.batch_metrics)
-  torch.save(batch_metrics, f'{model_dir}/{model_name}_batch_metrics.pt')
+  batch_metrics = calc_batch_metrics(adata, embed_key = f'X_{model_name}_latent', batch_key = 'Site', metrics_list = args.batch_metrics)
+  torch.save(batch_metrics, f'{model_dir}/{model_name}_batch_metrics_by_Site.pt')
 
-  bio_metrics = calc_bio_metrics(adata, embed_key = f"X_{model_name}_latent", metrics_list = args.bio_metrics)
-  torch.save(bio_metrics, f'{model_dir}/{model_name}_bio_metrics.pt')
+  bio_metrics = calc_bio_metrics(adata, embed_key = f"X_{model_name}_latent", batch_key = 'Site', metrics_list = args.bio_metrics)
+  torch.save(bio_metrics, f'{model_dir}/{model_name}_bio_metrics_by_Site.pt')
+  
+  batch_metrics = calc_batch_metrics(adata, embed_key = f'X_{model_name}_latent', batch_key = 'sample_id', metrics_list = args.batch_metrics)
+  torch.save(batch_metrics, f'{model_dir}/{model_name}_batch_metrics_by_sampleid.pt')
+
+  bio_metrics = calc_bio_metrics(adata, embed_key = f"X_{model_name}_latent",batch_key = 'sample_id', metrics_list = args.bio_metrics)
+  torch.save(bio_metrics, f'{model_dir}/{model_name}_bio_metrics_by_sampleid_.pt')
 
   ## Generating UMAP image ##
   print('\nGenerating UMAP image...')
@@ -158,12 +164,16 @@ def main(args):
   
   sc.pp.neighbors(adata, n_neighbors=50, use_rep=f'X_{model_name}_latent', key_added=f'X_{model_name}_k50')
   sc.tl.umap(adata, neighbors_key=f'X_{model_name}_k50')
-  adata.obsm[f'X_umap_{model_name}'] = adata.obsm['X_umap'].copy()
+  adata.obsm[f'umap_{args.data}_{model_name}_seed{args.seed}'] = adata.obsm['X_umap'].copy()
 
   plt.rcParams['figure.figsize'] = [10,10]
   col_obs = ['harmonized_celltype', 'Site']
-  sc.pl.embedding(adata, f'X_umap_{model_name}', color = col_obs, legend_loc='on data', size=5,
-                  save=f'umap_images/{args.data}_{model_name}_seed{args.seed}_umap.png')
+  sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_Site_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
+                  save='.png')
+  plt.rcParams['figure.figsize'] = [10,10]
+  col_obs = ['harmonized_celltype', 'sample_id']
+  sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_sampleid_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
+                  save='.png')
   print('Done.')
   
   

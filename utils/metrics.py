@@ -79,23 +79,23 @@ def calc_bio_metrics(adata, embed_key,
 	if('nmi' in metrics_list):
 		for i in range(len(cluster_keys)):
 			bio_metrics[f'nmi_{cluster_methods[i]}'] = scib.me.nmi(adata_copy, cluster_key=cluster_keys[i], label_key=label_key) 
-		print(bio_metrics)
+			print(f'nmi_{cluster_methods[i]}:', bio_metrics[f'nmi_{cluster_methods[i]}'])
 	if('ari' in metrics_list):
 		for i in range(len(cluster_keys)):
 			bio_metrics[f'ari_{cluster_methods[i]}'] = scib.me.ari(adata_copy, cluster_key=cluster_keys[i], label_key=label_key) 
-		print(bio_metrics)
+			print(f'ari_{cluster_methods[i]}:', bio_metrics[f'ari_{cluster_methods[i]}'])
 	if('iso_labels_f1' in metrics_list):
 		bio_metrics['iso_labels_f1'] = scib.me.isolated_labels_f1(adata_copy, batch_key=batch_key, label_key=label_key, embed = embed_key)
-		print(bio_metrics)
+		print('iso_labels_f1:', bio_metrics['iso_labels_f1'])
 	if('cellASW' in metrics_list):
 		bio_metrics['cellASW'] = scib.me.silhouette(adata_copy, label_key = label_key, embed=embed_key)
-		print(bio_metrics)
+		print('cellASW:', bio_metrics['cellASW'])
 	if('iso_labels_asw' in metrics_list):
 		bio_metrics['iso_labels_asw'] = scib.me.isolated_labels_asw(adata_copy, batch_key=batch_key, label_key=label_key, embed=embed_key)
-		print(bio_metrics)
+		print('iso_labels_asw:', bio_metrics['iso_labels_asw'])
 	if('cLisi' in metrics_list):
 		bio_metrics['cLisi'] = scib.me.clisi_graph(adata_copy, label_key=label_key, type_="embed", use_rep=embed_key)
-		print(bio_metrics)
+		print('cLisi:', bio_metrics['cLisi'])
 
 	return bio_metrics
 
@@ -106,7 +106,6 @@ def calc_batch_metrics(adata, embed_key,
 	# default: include all metrics
 	# knn graph constructed with k = 15, euclidean metric
 	batch_metrics = {}
-	# import ipdb; ipdb.set_trace()
 	print('batch metrics for', embed_key)
 	if('batchASW' in metrics_list):
 		batch_metrics['batchASW']  = scib.me.silhouette_batch(adata, batch_key=batch_key, label_key=label_key, embed=embed_key)

@@ -7,6 +7,8 @@ import argparse
 import matplotlib.pyplot as plt
 import wandb
 
+import scvi
+
 import gpytorch
 from tqdm import trange
 from model import GPLVM, LatentVariable, VariationalELBO, BatchIdx, _KL, PointLatentVariable
@@ -111,12 +113,55 @@ def main(args):
     pass #TODO: add in the data loading here
   print(f'Done loading in  {args.data}\n')
   
-  # TODO: add functionality for scvi and linearscvi
-  
   # set seeds
   torch.manual_seed(args.seed)
   np.random.seed(args.seed)
   random.seed(args.seed) 
+  
+  # if scvi:
+  if('scvi' in args.model):
+    arches_params = dict(
+      use_layer_norm="both",
+      use_batch_norm="none",
+      encode_covariates=True,
+      dropout_rate=0.2,
+      n_layers=2,
+      gene_likelihood = 'nb',
+    )
+
+    train_params = dict(
+      max_epochs=500, 
+      train_size = 1.0,
+      batch_size = 300,
+      plan_kwargs = {'lr': 0.005}, 
+    )
+    adata_ref = adata.copy()
+    
+    if(args.model == 'scvi'):
+      scvi.model.SCVI.setup_anndata(adata_ref, batch_key='sample_id', layer='counts')
+      scvi_ref = scvi.model.SCVI(adata_ref, **arches_params)
+      scvi_ref.train(**train_params)
+
+      scvi_ref.save(f'{model_dir}/nonlinearNBscVI/')
+      losses = scvi_ref.history['elbo_train']
+      torch.save(losses, f'{model_dir}/nonlinearNBscVI_losses.pt')
+      losses.plot()
+      plt.savefig("nonlinearNBscVI.png")
+    elif(args.model == 'linear_scvi'):
+      scvi.model.LinearSCVI.setup_anndata(adata_ref, batch_key='sample_id', layer='counts')
+      linearscvi = scvi.model.LinearSCVI(adata_ref, **arches_params)
+      linearscvi.train(**train_params)
+
+      linearscvi.save('models/linearNBscVI/')
+      losses = linearscvi.history['elbo_train']
+      torch.save(losses, 'models/linearNBscVI_losses.pt')
+      losses.plot()
+      plt.savefig("linearNBscVI_losses.png")
+    else: 
+      raise ValueError(f'Invalid input argument: {args.model} is not a valid scvi input.')
+    return
+    
+  # if gplvm - then continue
   
   # data preprocessing
   print('Starting Data Preprocessing:')

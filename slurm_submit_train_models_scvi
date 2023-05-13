@@ -1,0 +1,88 @@
+#!/bin/bash
+
+#!#############################################################
+
+#SBATCH -J gplvm
+#SBATCH -A COMPUTERLAB-SL3-GPU
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gres=gpu:1
+#SBATCH --time=2:00:00
+#SBATCH --mail-type=ALL
+#SBATCH -p ampere
+
+numnodes=$SLURM_JOB_NUM_NODES
+numtasks=$SLURM_NTASKS
+mpi_tasks_per_node=$(echo "$SLURM_TASKS_PER_NODE" | sed -e  's/^\([0-9][0-9]*\).*$/\1/')
+#! ############################################################
+DATA_FLAGS=('covid_data' 'splatter_nb')
+MODEL_FLAGS=('scvi' 'linear_scvi')
+PREPROC_FLAG='rawcounts'
+ENCODER_FLAG='scaly'
+KERNEL_FLAG='linear_linear'
+LIKELIHOOD_FLAG='nblikelihoodlearnscalelearntheta'
+SEED_FLAGS=('123' '42' '0')
+
+source /home/smxz2/.bashrc # IMPORTANT: needed to ensure that conda works
+cd /rds/user/smxz2/hpc-work/scvi-ablation
+conda activate /home/smxz2/.conda/envs/gplvm
+
+application="/home/smxz2/.conda/envs/gplvm/bin/python"
+options_train="train_models.py -p ${PREPROC_FLAG} -e ${ENCODER_FLAG} -k ${KERNEL_FLAG} -l ${LIKELIHOOD_FLAG}"
+options_metrics="calc_metrics.py -p ${PREPROC_FLAG} -e ${ENCODER_FLAG} -k ${KERNEL_FLAG} -l ${LIKELIHOOD_FLAG}"
+workdir="/rds/user/smxz2/hpc-work/scvi-ablation"
+export OMP_NUM_THREADS=1
+np=$[${numnodes}*${mpi_tasks_per_node}]
+
+CMD=""
+for seed in "${SEED_FLAGS[@]}"
+do
+  for d_flag in "${DATA_FLAGS[@]}"
+  do
+    for m_flag in "${MODEL_FLAGS[@]}"
+    do
+      CMD+="$application $options_train -m ${m_flag} -d ${d_flag} -s ${seed} > ./models/${d_flag}/seed${seed}/${m_flag}_${PREPROC_FLAG}_${ENCODER_FLAG}_${KERNEL_FLAG}_${LIKELIHOOD_FLAG}_output.txt & "
+    done
+  done
+done
+CMD+="wait;"
+for seed in "${SEED_FLAGS[@]}"
+do
+  for d_flag in "${DATA_FLAGS[@]}"
+  do
+    for m_flag in "${MODEL_FLAGS[@]}"
+    do
+      CMD+="$application $options_metrics -m ${m_flag} -d ${d_flag} -s ${seed} > ./models/${d_flag}/seed${seed}/${m_flag}_${PREPROC_FLAG}_${ENCODER_FLAG}_${KERNEL_FLAG}_${LIKELIHOOD_FLAG}_metrics_output.txt & "
+    done
+  done
+done
+CMD+="wait"
+
+echo -e $CMD
+
+###############################################################
+# we don't change this stuff - this is from the template
+
+cd $workdir
+echo -e "Changed directory to `pwd`.\n"
+
+JOBID=$SLURM_JOB_ID
+
+echo -e "JobID: $JOBID\n======"
+echo "Time: `date`"
+echo "Running on master node: `hostname`"
+echo "Current directory: `pwd`"
+
+if [ "$SLURM_JOB_NODELIST" ]; then
+        #! Create a machine file:
+        export NODEFILE=`generate_pbs_nodefile`
+        cat $NODEFILE | uniq > machine.file.$JOBID
+        echo -e "\nNodes allocated:\n================"
+        echo `cat machine.file.$JOBID | sed -e 's/\..*$//g'`
+fi
+
+echo -e "\nnumtasks=$numtasks, numnodes=$numnodes, mpi_tasks_per_node=$mpi_tasks_per_node (OMP_NUM_THREADS=$OMP_NUM_THREADS)"
+
+echo -e "\nExecuting command:\n==================\n$CMD\n"
+
+eval $CMD

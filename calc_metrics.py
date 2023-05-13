@@ -7,6 +7,8 @@ import argparse
 import matplotlib.pyplot as plt
 import wandb
 
+import scvi
+
 import gpytorch
 from tqdm import trange
 from model import GPLVM, LatentVariable, VariationalELBO, BatchIdx, _KL, PointLatentVariable
@@ -62,6 +64,62 @@ def main(args):
   torch.manual_seed(args.seed)
   np.random.seed(args.seed)
   random.seed(args.seed) 
+  
+  # if model is scvi
+  if('scvi' in args.model):
+    adata_ref = adata.copy()
+    if(args.model == 'scvi'):
+      model_name = "nonlinearNBscVI"
+      scvi.model.SCVI.setup_anndata(adata_ref, batch_key='sample_id', layer='counts')      
+      scvi_ref = scvi.model.SCVI.load(f'{model_dir}/nonlinearNBscVI', adata_ref)
+      
+      adata_ref.obsm["X_scVI"] = scvi_ref.get_latent_representation()
+      adata.obsm["X_scVI"] = scvi_ref.get_latent_representation(adata_ref)
+    elif(args.model == 'linear_scvi'):
+      model_name = "linearNBscVI"
+      scvi.model.LinearSCVI.setup_anndata(adata_ref, batch_key='sample_id', layer='counts')
+      linearscvi = scvi.model.LinearSCVI.load('models/linearNBscVI', adata_ref)
+      
+      adata_ref.obsm["X_scVI"] = linearscvi.get_latent_representation()
+      adata.obsm["X_scVI"] = linearscvi.get_latent_representation(adata_ref)  
+    else: 
+      raise ValueError(f'Invalid input argument: {args.model} is not a valid scvi input.')
+    
+    ## Calculating Metrics ##
+    if(args.data == 'covid_data'):
+      batch_metrics = calc_batch_metrics(adata, embed_key = 'X_scVI', batch_key = 'Site', metrics_list = args.batch_metrics)
+      torch.save(batch_metrics, f'{model_dir}/{model_name}_batch_metrics_by_Site.pt')
+    
+    bio_metrics = calc_bio_metrics(adata, embed_key = 'X_scVI', batch_key = 'sample_id', metrics_list = args.bio_metrics)
+    torch.save(bio_metrics, f'{model_dir}/{model_name}_bio_metrics_by_sampleid.pt')
+    
+    batch_metrics = calc_batch_metrics(adata, embed_key = 'X_scVI', batch_key = 'sample_id', metrics_list = args.batch_metrics)
+    torch.save(batch_metrics, f'{model_dir}/{model_name}_batch_metrics_by_sampleid.pt')
+  
+    ## Generating UMAP ##
+    print('\nGenerating UMAP image...')
+    umap_seed = 1
+    torch.manual_seed(umap_seed)
+    np.random.seed(umap_seed)
+    random.seed(umap_seed) 
+    
+    sc.pp.neighbors(adata, n_neighbors=50, use_rep=f'X_scVI', key_added=f'X_{model_name}_k50')
+    sc.tl.umap(adata, neighbors_key=f'X_{model_name}_k50')
+    adata.obsm[f'umap_{args.data}_{model_name}_seed{args.seed}'] = adata.obsm['X_umap'].copy()
+
+    if(args.data == 'covid_data'):
+      plt.rcParams['figure.figsize'] = [10,10]
+      col_obs = ['harmonized_celltype', 'Site']
+      sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
+                  save='_Site.png')
+  
+    plt.rcParams['figure.figsize'] = [10,10]
+    col_obs = ['harmonized_celltype', 'sample_id']
+    sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
+                  save='_sampleid.png')
+    print('Done.')  
+    return
+  
   
   # data preprocessing
   print('Starting Data Preprocessing:')
@@ -154,9 +212,6 @@ def main(args):
   if(args.data == 'covid_data'):
     batch_metrics = calc_batch_metrics(adata, embed_key = f'X_{model_name}_latent', batch_key = 'Site', metrics_list = args.batch_metrics)
     torch.save(batch_metrics, f'{model_dir}/{model_name}_batch_metrics_by_Site.pt')
-
-    bio_metrics = calc_bio_metrics(adata, embed_key = f"X_{model_name}_latent", batch_key = 'Site', metrics_list = args.bio_metrics)
-    torch.save(bio_metrics, f'{model_dir}/{model_name}_bio_metrics_by_Site.pt')
   
   batch_metrics = calc_batch_metrics(adata, embed_key = f'X_{model_name}_latent', batch_key = 'sample_id', metrics_list = args.batch_metrics)
   torch.save(batch_metrics, f'{model_dir}/{model_name}_batch_metrics_by_sampleid.pt')
@@ -224,8 +279,8 @@ if __name__ == "__main__":
     parser.add_argument('--model_dir', type = str, help = 'Directory where all models are stored', 
                         default = 'models')
 
-    parser.add_argument('--bio_metrics', type = str, nargs='*',help = 'List of bio metrics to calculate', default = ['nmi', 'ari', 'iso_labels_f1', 'cellASW', 'iso_labels_asw', 'cLisi'])
-    parser.add_argument('--batch_metrics', type = str,nargs='*', help = 'List of bio metrics to calculate', default = ['batchASW', 'iLisi', 'graph_connectivity'])
+    parser.add_argument('--bio_metrics', type = str, nargs='*',help = 'List of bio metrics to calculate', default = ['nmi', 'ari', 'iso_labels_f1', 'cellASW', 'iso_labels_asw'])
+    parser.add_argument('--batch_metrics', type = str,nargs='*', help = 'List of bio metrics to calculate', default = ['batchASW', 'graph_connectivity'])
     parser.add_argument('--cluster_methods', type=str, nargs='+',help = 'List of cluster methods', default = ['kmeans', 'leiden'])
     
     args = parser.parse_args()

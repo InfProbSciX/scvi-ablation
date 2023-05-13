@@ -11,13 +11,12 @@ import gpytorch
 from tqdm import trange
 from model import GPLVM, LatentVariable, VariationalELBO, BatchIdx, _KL, PointLatentVariable
 from utils.preprocessing import setup_from_anndata
-# from scvi.distributions import NegativeBinomial, ZeroInflatedNegativeBinomial
 from gpytorch.likelihoods import GaussianLikelihood
 from gpytorch.priors import NormalPrior
 from torch.distributions import LogNormal
 
 from utils.metrics import calc_bio_metrics, calc_batch_metrics
-from model import ScalyEncoder, NNEncoder, NBLikelihood # change this later to the model file
+from model import ScalyEncoder, NNEncoder, NBLikelihood 
 
 import argparse
 
@@ -43,7 +42,16 @@ def main(args):
                                  					continuous_covariate_keys=None,
                                  					scale_gex=False)
   elif(args.data == 'splatter_nb'):
-    pass #TODO: add in the data loading here
+    data_dir = 'data/simulated_data/'
+    adata = sc.read_h5ad(data_dir + "balanced3kcells8kgenes.h5ad")
+    X_covars_keys = ['sample_id']
+    Y_rawcounts, X_covars = setup_from_anndata(adata, 
+                                 					layer='counts',
+                                 					categorical_covariate_keys=X_covars_keys,
+                                 					continuous_covariate_keys=None,
+                                 					scale_gex=False)
+    Y_rawcounts = Y_rawcounts.to(torch.float32)
+    X_covars = X_covars.to(torch.float32)
   else: #innate_immunity
     pass #TODO: add in the data loading here
   print(f'Done loading in  {args.data}\n')
@@ -143,11 +151,12 @@ def main(args):
   adata.obsm[f'X_{model_name}_latent'] = X_latent_dims.detach().numpy()
 
   ## Calculating metrics ##
-  batch_metrics = calc_batch_metrics(adata, embed_key = f'X_{model_name}_latent', batch_key = 'Site', metrics_list = args.batch_metrics)
-  torch.save(batch_metrics, f'{model_dir}/{model_name}_batch_metrics_by_Site.pt')
+  if(args.data == 'covid_data'):
+    batch_metrics = calc_batch_metrics(adata, embed_key = f'X_{model_name}_latent', batch_key = 'Site', metrics_list = args.batch_metrics)
+    torch.save(batch_metrics, f'{model_dir}/{model_name}_batch_metrics_by_Site.pt')
 
-  bio_metrics = calc_bio_metrics(adata, embed_key = f"X_{model_name}_latent", batch_key = 'Site', metrics_list = args.bio_metrics)
-  torch.save(bio_metrics, f'{model_dir}/{model_name}_bio_metrics_by_Site.pt')
+    bio_metrics = calc_bio_metrics(adata, embed_key = f"X_{model_name}_latent", batch_key = 'Site', metrics_list = args.bio_metrics)
+    torch.save(bio_metrics, f'{model_dir}/{model_name}_bio_metrics_by_Site.pt')
   
   batch_metrics = calc_batch_metrics(adata, embed_key = f'X_{model_name}_latent', batch_key = 'sample_id', metrics_list = args.batch_metrics)
   torch.save(batch_metrics, f'{model_dir}/{model_name}_batch_metrics_by_sampleid.pt')
@@ -166,14 +175,16 @@ def main(args):
   sc.tl.umap(adata, neighbors_key=f'X_{model_name}_k50')
   adata.obsm[f'umap_{args.data}_{model_name}_seed{args.seed}'] = adata.obsm['X_umap'].copy()
 
-  plt.rcParams['figure.figsize'] = [10,10]
-  col_obs = ['harmonized_celltype', 'Site']
-  sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_Site_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
-                  save='.png')
+  if(args.data == 'covid_data'):
+    plt.rcParams['figure.figsize'] = [10,10]
+    col_obs = ['harmonized_celltype', 'Site']
+    sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
+                  save='_Site.png')
+  
   plt.rcParams['figure.figsize'] = [10,10]
   col_obs = ['harmonized_celltype', 'sample_id']
-  sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_sampleid_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
-                  save='.png')
+  sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
+                  save='_sampleid.png')
   print('Done.')
   
   
@@ -213,10 +224,10 @@ if __name__ == "__main__":
     parser.add_argument('--model_dir', type = str, help = 'Directory where all models are stored', 
                         default = 'models')
 
-    parser.add_argument('--bio_metrics', type = str, nargs='+',help = 'List of bio metrics to calculate', default = ['nmi', 'ari', 'iso_labels_f1', 'cellASW', 'iso_labels_asw', 'cLisi'])
-    parser.add_argument('--batch_metrics', type = str,nargs='+', help = 'List of bio metrics to calculate', default = ['batchASW', 'iLisi', 'graph_connectivity'])
+    parser.add_argument('--bio_metrics', type = str, nargs='*',help = 'List of bio metrics to calculate', default = ['nmi', 'ari', 'iso_labels_f1', 'cellASW', 'iso_labels_asw', 'cLisi'])
+    parser.add_argument('--batch_metrics', type = str,nargs='*', help = 'List of bio metrics to calculate', default = ['batchASW', 'iLisi', 'graph_connectivity'])
     parser.add_argument('--cluster_methods', type=str, nargs='+',help = 'List of cluster methods', default = ['kmeans', 'leiden'])
-
+    
     args = parser.parse_args()
 
     main(args)

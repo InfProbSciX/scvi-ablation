@@ -12,10 +12,7 @@ from tqdm import trange
 from model import GPLVM, LatentVariable, VariationalELBO, BatchIdx, _KL, PointLatentVariable
 from utils.preprocessing import setup_from_anndata
 from gpytorch.likelihoods import GaussianLikelihood
-# from gpytorch.priors import NormalPrior
-# from torch.distributions import LogNormal
 
-# from utils.metrics import calc_bio_metrics, calc_batch_metrics
 from model import ScalyEncoder, NNEncoder, NBLikelihood 
 
 import argparse
@@ -42,6 +39,7 @@ def train(gplvm, likelihood, Y, learn_scale, encoder,
         optimizer.zero_grad()
         
         Y_batch = Y[batch_index]
+
         if(learn_scale):
           if(encoder == 'scaly'):
             X_l, S_l = gplvm.X_latent(Y = Y_batch, X_covars = gplvm.X_covars[batch_index])
@@ -99,7 +97,16 @@ def main(args):
                                  					continuous_covariate_keys=None,
                                  					scale_gex=False)
   elif(args.data == 'splatter_nb'):
-    pass #TODO: add in the data loading here
+    data_dir = 'data/simulated_data/'
+    adata = sc.read_h5ad(data_dir + "balanced3kcells8kgenes.h5ad")
+    X_covars_keys = ['sample_id']
+    Y_rawcounts, X_covars = setup_from_anndata(adata, 
+                                 					layer='counts',
+                                 					categorical_covariate_keys=X_covars_keys,
+                                 					continuous_covariate_keys=None,
+                                 					scale_gex=False)
+    Y_rawcounts = Y_rawcounts.to(torch.float32)
+    X_covars = X_covars.to(torch.float32)
   else: #innate_immunity
     pass #TODO: add in the data loading here
   print(f'Done loading in  {args.data}\n')
@@ -182,7 +189,7 @@ def main(args):
   
   config = {
     "learning_rate": 0.005,
-    "epochs": 15, 
+    "epochs": args.epochs, 
     "batch_size": 300,
     'likelihood': likelihood,
     'X_latent': gplvm.X_latent,
@@ -217,6 +224,7 @@ def main(args):
                 lr=config['learning_rate'], epochs=config['epochs'], batch_size=config['batch_size']) 
 
   torch.save(losses, f'{model_dir}/{model_name}_losses.pt')
+  torch.save(likelihood.state_dict(), f'{model_dir}/{model_name}_likelihood_state_dict.pt')
   torch.save(gplvm.state_dict(), f'{model_dir}/{model_name}_gplvm_state_dict.pt')
 
   wandb.finish()
@@ -238,7 +246,7 @@ if __name__ == "__main__":
                         'logtranscolumnstd', 
                         'libnormlogtranscolumnstd'])
     parser.add_argument('-e', '--encoder', type = str, help='type of encoder',
-    					default = 'point',
+    					default = 'scaly',
     					choices = ['point', 'nnenc', 'scaly', 'scalynocovars']) 
     parser.add_argument('-k', '--kernel', type = str, help = 'type of kernel',
     					default = 'linear_linear',
@@ -257,7 +265,9 @@ if __name__ == "__main__":
                         default = 42)
     parser.add_argument('--model_dir', type = str, help = 'Directory where all models are stored', 
                         default = 'models')
-
+    parser.add_argument('--epochs', type = int, help = 'number of epochs to run',
+                        default = 15)
+    
     args = parser.parse_args()
 
     main(args)

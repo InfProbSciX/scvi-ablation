@@ -291,7 +291,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_dir', type = str, help = 'Directory where all models are stored', 
                         default = 'models')
 
-    parser.add_argument('--bio_metrics', type = str, nargs='*',help = 'List of bio metrics to calculate', default = ['nmi', 'ari', 'iso_labels_f1', 'cellASW', 'iso_labels_asw'])
+    parser.add_argument('--bio_metrics', type = str, nargs='*',help = 'List of bio metrics to calculate', default = ['nmi', 'ari', 'cellASW'])
     parser.add_argument('--batch_metrics', type = str,nargs='*', help = 'List of bio metrics to calculate', default = ['batchASW', 'graph_connectivity'])
     parser.add_argument('--cluster_methods', type=str, nargs='+',help = 'List of cluster methods', default = ['kmeans', 'leiden'])
     

@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import wandb
 
 import scvi
+import os
 
 import gpytorch
 from tqdm import trange
@@ -46,6 +47,17 @@ def main(args):
   elif(args.data == 'splatter_nb'):
     data_dir = 'data/simulated_data/'
     adata = sc.read_h5ad(data_dir + "balanced3kcells8kgenes.h5ad")
+    X_covars_keys = ['sample_id']
+    Y_rawcounts, X_covars = setup_from_anndata(adata, 
+                                 					layer='counts',
+                                 					categorical_covariate_keys=X_covars_keys,
+                                 					continuous_covariate_keys=None,
+                                 					scale_gex=False)
+    Y_rawcounts = Y_rawcounts.to(torch.float32)
+    X_covars = X_covars.to(torch.float32)
+  elif(args.data == 'splatter_nb_large'):
+    data_dir = 'data/simulated_data/'
+    adata = sc.read_h5ad(data_dir + "balanced_large.h5ad")
     X_covars_keys = ['sample_id']
     Y_rawcounts, X_covars = setup_from_anndata(adata, 
                                  					layer='counts',
@@ -251,7 +263,7 @@ if __name__ == "__main__":
               choices = ['scvi', 'linear_scvi', 'gplvm'])
     parser.add_argument('-d', '--data', type=str, help='Data your model was trained on', 
               default = 'covid_data',
-    					choices = ['covid_data', 'innate_immunity', 'splatter_nb'])
+    					choices = ['covid_data', 'innate_immunity', 'splatter_nb', 'splatter_nb_large'])
     parser.add_argument('-p', '--preprocessing', type = str, help='preprocessing of raw counts',
     					default = 'rawcounts',
     					choices = ['rawcounts', 

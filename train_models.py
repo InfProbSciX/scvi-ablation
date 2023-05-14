@@ -107,7 +107,7 @@ def main(args):
                                  					scale_gex=False)
   elif(args.data == 'splatter_nb'):
     data_dir = 'data/simulated_data/'
-    adata = sc.read_h5ad(data_dir + "balanced3kcells8kgenes.h5ad")
+    adata = sc.read_h5ad(data_dir + "balanced_small.h5ad")
     X_covars_keys = ['sample_id']
     Y_rawcounts, X_covars = setup_from_anndata(adata, 
                                  					layer='counts',
@@ -170,9 +170,9 @@ def main(args):
       linearscvi = scvi.model.LinearSCVI(adata_ref, **arches_params)
       linearscvi.train(**train_params)
 
-      linearscvi.save('models/linearNBscVI/')
+      linearscvi.save(f'{model_dir}/linearNBscVI/')
       losses = linearscvi.history['elbo_train']
-      torch.save(losses, 'models/linearNBscVI_losses.pt')
+      torch.save(losses, f'{model_dir}/linearNBscVI_losses.pt')
       losses.plot()
       plt.savefig("linearNBscVI_losses.png")
     else: 
@@ -223,8 +223,10 @@ def main(args):
   ## Declare GPLVM model ##
   if('periodic' in args.kernel):
     period_scale = np.pi # stand-in rn
+    pseudotime_dim = True
   else:
     period_scale = np.Inf # no cc/pseudotime tracking
+    pseudotime_dim = False
   gplvm = GPLVM(n, d, q,
               covariate_dim=len(X_covars.T),
               n_inducing=q + len(X_covars.T)+1,

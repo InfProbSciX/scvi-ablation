@@ -46,7 +46,7 @@ def main(args):
                                  					scale_gex=False)
   elif(args.data == 'splatter_nb'):
     data_dir = 'data/simulated_data/'
-    adata = sc.read_h5ad(data_dir + "balanced3kcells8kgenes.h5ad")
+    adata = sc.read_h5ad(data_dir + "balanced_small.h5ad")
     X_covars_keys = ['sample_id']
     Y_rawcounts, X_covars = setup_from_anndata(adata, 
                                  					layer='counts',

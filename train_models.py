@@ -164,7 +164,7 @@ def main(args):
       losses = scvi_ref.history['elbo_train']
       torch.save(losses, f'{model_dir}/nonlinearNBscVI_losses.pt')
       losses.plot()
-      plt.savefig("nonlinearNBscVI.png")
+      plt.savefig(f"{model_dir}/nonlinearNBscVI_losses.png")
     elif(args.model == 'linear_scvi'):
       scvi.model.LinearSCVI.setup_anndata(adata_ref, batch_key='sample_id', layer='counts')
       linearscvi = scvi.model.LinearSCVI(adata_ref, **arches_params)
@@ -174,7 +174,7 @@ def main(args):
       losses = linearscvi.history['elbo_train']
       torch.save(losses, f'{model_dir}/linearNBscVI_losses.pt')
       losses.plot()
-      plt.savefig("linearNBscVI_losses.png")
+      plt.savefig(f"{model_dir}/linearNBscVI_losses.png")
     else: 
       raise ValueError(f'Invalid input argument: {args.model} is not a valid scvi input.')
     return
@@ -211,7 +211,8 @@ def main(args):
 
   ## Declare encoder ##
   if(args.encoder == 'point'):
-    X_latent = PointLatentVariable(torch.randn(n, q))
+    X_latent_init = torch.tensor(adata.obsm['X_pca'][:, 0:q]) # check if this is what we want it to be for covid dataa
+    X_latent = PointLatentVariable(X_latent_init)
   elif(args.encoder == 'nnenc'): 
     X_latent = NNEncoder(n, q, d, (128, 128))
   elif(args.encoder == 'scaly'):
@@ -275,7 +276,7 @@ def main(args):
   } 
   
   print('Initializing wandb and training model...')
-  wandb.init(project="scvi-ablation", entity="ml-at-cl", name = model_name, config = config)
+  wandb.init(project="scvi-ablation", entity="ml-at-cl", name = f'{args.data}_{model_name}', config = config)
 
   if torch.cuda.is_available():
     Y = Y.cuda()

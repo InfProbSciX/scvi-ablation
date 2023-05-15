@@ -21,7 +21,7 @@ PREPROC_FLAG='rawcounts'
 ENCODER_FLAGS=('scaly' 'scalynocovars')
 KERNEL_FLAG='linear_linear'
 LIKELIHOOD_FLAGS=('nblikelihoodlearnscalelearntheta' 'nblikelihoodlearnscalefixedtheta1')
-SEED_FLAG=('0' '123' '42')
+SEED_FLAG=('42') #('0' '123' '42')
 
 source /home/smxz2/.bashrc # IMPORTANT: needed to ensure that conda works
 cd /rds/user/smxz2/hpc-work/scvi-ablation
@@ -42,24 +42,24 @@ do
   do
     for e_flag in "${ENCODER_FLAGS[@]}"
     do
-      CMD+="$application $options_train -l ${l_flag} -e ${e_flag} -s ${seed} --epochs 500 > ./models/${DATA_FLAG}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${KERNEL_FLAG}_${l_flag}_output.txt & "
+      CMD+="$application $options_train -l ${l_flag} -e ${e_flag} -s ${seed} --epochs 300 > ./models/${DATA_FLAG}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${KERNEL_FLAG}_${l_flag}_output.txt & "
     done
-    # CMD+="wait; "
+    CMD+="wait; "
   done
 done
-CMD+="wait; "
-for seed in "${SEED_FLAG[@]}"
-do
-  for l_flag in "${LIKELIHOOD_FLAGS[@]}"
-  do
-    for e_flag in "${ENCODER_FLAGS[@]}"
-    do
-      CMD+="$application $options_metrics -l ${l_flag} -e ${e_flag} -s ${seed} > ./models/${DATA_FLAG}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${KERNEL_FLAG}_${l_flag}_metrics_output.txt & "
-    done
-    # CMD+="wait; "
-  done
-done
-CMD+="wait; "
+# CMD+="wait; "
+# for seed in "${SEED_FLAG[@]}"
+# do
+#   for l_flag in "${LIKELIHOOD_FLAGS[@]}"
+#   do
+#     for e_flag in "${ENCODER_FLAGS[@]}"
+#     do
+#       CMD+="$application $options_metrics -l ${l_flag} -e ${e_flag} -s ${seed} > ./models/${DATA_FLAG}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${KERNEL_FLAG}_${l_flag}_metrics_output.txt & "
+#     done
+#     # CMD+="wait; "
+#   done
+# done
+# CMD+="wait; "
 # for l_flag in "${LIKELIHOOD_FLAGS[@]}"
 # do
 #   for e_flag in "${ENCODER_FLAGS[@]}"

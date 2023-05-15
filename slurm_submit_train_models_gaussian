@@ -2,7 +2,7 @@
 
 #!#############################################################
 
-#SBATCH -J gplvm
+#SBATCH -J gauss
 #SBATCH -A COMPUTERLAB-SL3-GPU
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -17,11 +17,11 @@ mpi_tasks_per_node=$(echo "$SLURM_TASKS_PER_NODE" | sed -e  's/^\([0-9][0-9]*\).
 #! ############################################################
 DATA_FLAG='splatter_nb'
 MODEL_FLAG='gplvm'
-PREPROC_FLAGS=('libnormlogtrans' 'logtranscolumnstd' 'libnormlogtranscolumnstd')
-ENCODER_FLAGS=('point' 'nnenc' 'scalynocovars' 'scaly')
+PREPROC_FLAGS=('logtranscolumnstd') #('libnormlogtrans' 'logtranscolumnstd' 'libnormlogtranscolumnstd')
+ENCODER_FLAGS=('nnenc' 'scalynocovars' 'scaly') #
 KERNEL_FLAG='linear_linear'
 LIKELIHOOD_FLAG='gaussianlikelihood'
-SEED_FLAG=('123' '42' '0')
+SEED_FLAG=('42') # ('123' '42' '0')
 
 source /home/smxz2/.bashrc # IMPORTANT: needed to ensure that conda works
 cd /rds/user/smxz2/hpc-work/scvi-ablation
@@ -35,30 +35,29 @@ export OMP_NUM_THREADS=1
 np=$[${numnodes}*${mpi_tasks_per_node}]
 
 CMD=""
-# for seed in "${SEED_FLAG[@]}"
-# do
-#   for p_flag in "${PREPROC_FLAGS[@]}"
-#   do
-#     for e_flag in "${ENCODER_FLAGS[@]}"
-#     do
-#       CMD+="$application $options_train -p ${p_flag} -e ${e_flag} -s ${seed} --epochs 500 > ./models/${DATA_FLAG}/seed${seed}/${MODEL_FLAG}_${p_flag}_${e_flag}_${KERNEL_FLAG}_${LIKELIHOOD_FLAG}_output.txt & "
-#     done
-#     # CMD+="wait; "
-#   done
-# done
-# CMD+="wait;"
 for seed in "${SEED_FLAG[@]}"
 do
   for p_flag in "${PREPROC_FLAGS[@]}"
   do
     for e_flag in "${ENCODER_FLAGS[@]}"
     do
-      CMD+="$application $options_metrics -p ${p_flag} -e ${e_flag} -s ${seed} > ./models/${DATA_FLAG}/seed${seed}/${MODEL_FLAG}_${p_flag}_${e_flag}_${KERNEL_FLAG}_${LIKELIHOOD_FLAG}_metrics_output.txt & "
+      CMD+="$application $options_train -p ${p_flag} -e ${e_flag} -s ${seed} --epochs 300 > ./models/${DATA_FLAG}/seed${seed}/${MODEL_FLAG}_${p_flag}_${e_flag}_${KERNEL_FLAG}_${LIKELIHOOD_FLAG}_output.txt & "
     done
-    # CMD+="wait; "
   done
 done
-CMD+="wait"
+CMD+="wait;"
+# for seed in "${SEED_FLAG[@]}"
+# do
+#   for p_flag in "${PREPROC_FLAGS[@]}"
+#   do
+#     for e_flag in "${ENCODER_FLAGS[@]}"
+#     do
+#       CMD+="$application $options_metrics -p ${p_flag} -e ${e_flag} -s ${seed} > ./models/${DATA_FLAG}/seed${seed}/${MODEL_FLAG}_${p_flag}_${e_flag}_${KERNEL_FLAG}_${LIKELIHOOD_FLAG}_metrics_output.txt & "
+#     done
+#     # CMD+="wait; "
+#   done
+# done
+# CMD+="wait"
 
 echo -e $CMD
 

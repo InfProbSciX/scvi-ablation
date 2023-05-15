@@ -292,6 +292,8 @@ def main(args):
   torch.save(losses, f'{model_dir}/{model_name}_losses.pt')
   torch.save(likelihood.state_dict(), f'{model_dir}/{model_name}_likelihood_state_dict.pt')
   torch.save(gplvm.state_dict(), f'{model_dir}/{model_name}_gplvm_state_dict.pt')
+  plt.plot(losses)
+  plt.savefig(losses, f"{model_dir}/{model_name}_losses.png")
 
   wandb.finish()
   print('Done.')

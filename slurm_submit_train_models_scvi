@@ -1,39 +1,38 @@
-# #!/bin/bash
+#!/bin/bash
 
-# #!#############################################################
+#!#############################################################
 
-# #SBATCH -J gplvm
-# #SBATCH -A COMPUTERLAB-SL3-GPU
-# #SBATCH --nodes=1
-# #SBATCH --ntasks=1
-# #SBATCH --gres=gpu:1
-# #SBATCH --time=2:00:00
-# #SBATCH --mail-type=ALL
-# #SBATCH -p ampere
+#SBATCH -J scvi
+#SBATCH -A COMPUTERLAB-SL3-GPU
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gres=gpu:1
+#SBATCH --time=2:00:00
+#SBATCH --mail-type=ALL
+#SBATCH -p ampere
 
-# numnodes=$SLURM_JOB_NUM_NODES
-# numtasks=$SLURM_NTASKS
-# mpi_tasks_per_node=$(echo "$SLURM_TASKS_PER_NODE" | sed -e  's/^\([0-9][0-9]*\).*$/\1/')
-# #! ############################################################
-DATA_FLAGS=('splatter_nb_large')
-MODEL_FLAGS=('scvi' 'linear_scvi')
+numnodes=$SLURM_JOB_NUM_NODES
+numtasks=$SLURM_NTASKS
+mpi_tasks_per_node=$(echo "$SLURM_TASKS_PER_NODE" | sed -e  's/^\([0-9][0-9]*\).*$/\1/')
+#! ############################################################
+DATA_FLAGS=('covid_data') # 'splatter_nb')
+MODEL_FLAGS=('linear_scvi') # 'scvi'
 PREPROC_FLAG='rawcounts'
 ENCODER_FLAG='scaly'
 KERNEL_FLAG='linear_linear'
 LIKELIHOOD_FLAG='nblikelihoodlearnscalelearntheta'
 SEED_FLAGS=('42') #('123' '42' '0')
 
-# source /home/smxz2/.bashrc # IMPORTANT: needed to ensure that conda works
-# cd /rds/user/smxz2/hpc-work/scvi-ablation
-# conda activate /home/smxz2/.conda/envs/gplvm
+source /home/smxz2/.bashrc # IMPORTANT: needed to ensure that conda works
+cd /rds/user/smxz2/hpc-work/scvi-ablation
+conda activate /home/smxz2/.conda/envs/gplvm
 
-# application="/home/smxz2/.conda/envs/gplvm/bin/python"
-application="python"
+application="/home/smxz2/.conda/envs/gplvm/bin/python"
 options_train="train_models.py -p ${PREPROC_FLAG} -e ${ENCODER_FLAG} -k ${KERNEL_FLAG} -l ${LIKELIHOOD_FLAG}"
 options_metrics="calc_metrics.py -p ${PREPROC_FLAG} -e ${ENCODER_FLAG} -k ${KERNEL_FLAG} -l ${LIKELIHOOD_FLAG}"
-# workdir="/rds/user/smxz2/hpc-work/scvi-ablation"
-# export OMP_NUM_THREADS=1
-# np=$[${numnodes}*${mpi_tasks_per_node}]
+workdir="/rds/user/smxz2/hpc-work/scvi-ablation"
+export OMP_NUM_THREADS=1
+np=$[${numnodes}*${mpi_tasks_per_node}]
 
 CMD=""
 for seed in "${SEED_FLAGS[@]}"
@@ -44,7 +43,6 @@ do
     do
       CMD+="$application $options_train -m ${m_flag} -d ${d_flag} -s ${seed} > ./models/${d_flag}/seed${seed}/${m_flag}_${PREPROC_FLAG}_${ENCODER_FLAG}_${LIKELIHOOD_FLAG}_output.txt & "
     done
-    CMD+="wait; "
   done
 done
 
@@ -87,4 +85,4 @@ echo -e $CMD
 
 # echo -e "\nExecuting command:\n==================\n$CMD\n"
 
-eval $CMD
+# eval $CMD

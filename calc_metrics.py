@@ -90,7 +90,7 @@ def main(args):
     elif(args.model == 'linear_scvi'):
       model_name = "linearNBscVI"
       scvi.model.LinearSCVI.setup_anndata(adata_ref, batch_key='sample_id', layer='counts')
-      linearscvi = scvi.model.LinearSCVI.load('models/linearNBscVI', adata_ref)
+      linearscvi = scvi.model.LinearSCVI.load(f'{model_dir}/linearNBscVI', adata_ref)
       
       adata_ref.obsm["X_scVI"] = linearscvi.get_latent_representation()
       adata.obsm["X_scVI"] = linearscvi.get_latent_representation(adata_ref)  
@@ -119,11 +119,11 @@ def main(args):
     sc.tl.umap(adata, neighbors_key=f'X_{model_name}_k50')
     adata.obsm[f'umap_{args.data}_{model_name}_seed{args.seed}'] = adata.obsm['X_umap'].copy()
 
-    if(args.data == 'covid_data'):
-      plt.rcParams['figure.figsize'] = [10,10]
-      col_obs = ['harmonized_celltype', 'Site']
-      sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
-                  save='_Site.png')
+    # if(args.data == 'covid_data'):
+    #   plt.rcParams['figure.figsize'] = [10,10]
+    #   col_obs = ['harmonized_celltype', 'Site']
+    #   sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
+    #               save='_Site.png')
   
     plt.rcParams['figure.figsize'] = [10,10]
     col_obs = ['harmonized_celltype', 'sample_id']

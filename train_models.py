@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import wandb
 
 import scvi
-import os
+import os, sys
 
 import gpytorch
 from tqdm import trange
@@ -177,7 +177,7 @@ def main(args):
       plt.savefig(f"{model_dir}/linearNBscVI_losses.png")
     else: 
       raise ValueError(f'Invalid input argument: {args.model} is not a valid scvi input.')
-    return
+    sys.exit()
     
   # if gplvm - then continue
   
@@ -222,19 +222,26 @@ def main(args):
   print(f'Using encoder:\n{X_latent}\n')
   
   ## Declare GPLVM model ##
-  if('periodic' in args.kernel):
-    period_scale = np.pi # stand-in rn
+  if('periodic' in args.kernel): # add periodic kernel
+    period_scale = np.pi 
     pseudotime_dim = True
   else:
     period_scale = np.Inf # no cc/pseudotime tracking
     pseudotime_dim = False
+  
+  if('rbf' in args.kernel): # use fixed inducing locations for rbf
+    learn_inducing_locations = False
+  else:
+    learn_inducing_locations = True
+  
   gplvm = GPLVM(n, d, q,
               covariate_dim=len(X_covars.T),
               n_inducing=q + len(X_covars.T)+1,
               period_scale=period_scale,
               X_latent=X_latent,
               X_covars=X_covars,
-              pseudotime_dim=False
+              pseudotime_dim = pseudotime_dim
+              learn_inducing_locations = learn_inducing_locations
              )
   gplvm.intercept = gpytorch.means.ConstantMean()
   gplvm.random_effect_mean = gpytorch.means.ZeroMean()

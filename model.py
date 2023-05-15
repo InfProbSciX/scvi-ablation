@@ -41,7 +41,8 @@ class PointLatentVariable(LatentVariable):
 class GPLVM(ApproximateGP):
     def __init__(self, n, data_dim, latent_dim, covariate_dim,
                  pseudotime_dim=True, n_inducing=60, period_scale=2*np.pi,
-                 X_latent=None, X_covars=None):
+                 X_latent=None, X_covars=None,
+                 learn_inducing_locations=True):
         self.n = n
         self.q_l = latent_dim
         self.m = n_inducing
@@ -49,6 +50,7 @@ class GPLVM(ApproximateGP):
         self.q_p = pseudotime_dim
         self.batch_shape = torch.Size([data_dim])
 
+        self.learn_inducing_locations = learn_inducing_locations
         self.inducing_inputs = torch.randn(
             n_inducing, latent_dim + pseudotime_dim + covariate_dim)
         if pseudotime_dim:
@@ -58,7 +60,7 @@ class GPLVM(ApproximateGP):
         q_u = CholeskyVariationalDistribution(n_inducing,
                                               batch_shape=self.batch_shape)
         q_f = VariationalStrategy(self, self.inducing_inputs,
-                                  q_u, learn_inducing_locations=True) # changed inducing location to True
+                                  q_u, learn_inducing_locations=learn_inducing_locations) # changed inducing location to True
 
         super(GPLVM, self).__init__(q_f)
 

@@ -2,7 +2,7 @@
 
 #!#############################################################
 
-#SBATCH -J gplvm_gaussian_splattersmall
+#SBATCH -J nbnoscale
 #SBATCH -A COMPUTERLAB-SL3-GPU
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -15,12 +15,12 @@ numnodes=$SLURM_JOB_NUM_NODES
 numtasks=$SLURM_NTASKS
 mpi_tasks_per_node=$(echo "$SLURM_TASKS_PER_NODE" | sed -e  's/^\([0-9][0-9]*\).*$/\1/')
 #! ############################################################
-DATA_FLAGS=('splatter_nb' 'splatter_nb_large')
+DATA_FLAGS=('covid_data') #('splatter_nb' 'splatter_nb_large') #'splatter_nb' 'splatter_nb_large')
 MODEL_FLAG='gplvm'
 PREPROC_FLAG='rawcounts'
-ENCODER_FLAGS=('point' 'nnenc' 'scaly' 'scalynocovars')
-KERNEL_FLAG='linear_linear'
-LIKELIHOOD_FLAGS=('nblikelihoodnoscalelearntheta' 'nblikelihoodnoscalefixedtheta1')
+ENCODER_FLAGS=('nnenc') # 'scalynocovars') # 'vpoint' 'nnenc' 'scaly' 'scalynocovars') #('scaly' 'scalynocovars') #('vpoint' 'nnenc')  #( 'scaly' 'scalynocovars') #('nnenc' 'scaly' 'scalynocovars') # ('vpoint' 'point') # 
+KERNEL_FLAG='periodicrbf_linear'
+LIKELIHOOD_FLAGS=('nblikelihoodnoscalefixedtheta1') #  'nblikelihoodnoscalelearntheta''nblikelihoodnoscalefixedtheta1' 
 SEED_FLAGS=('42') # '0' '123')
 
 source /home/smxz2/.bashrc # IMPORTANT: needed to ensure that conda works
@@ -51,8 +51,8 @@ do
           CMD+="$application $options_train -l ${l_flag} -e ${e_flag} -d ${data}  -s ${seed} --epochs 300 > ./models/${data}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${KERNEL_FLAG}_${l_flag}_output.txt & "
         fi
       done
+      CMD+="wait; "
     done
-    CMD+="wait; "
   done
   # CMD+="wait; "
 done

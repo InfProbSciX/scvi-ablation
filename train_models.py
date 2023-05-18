@@ -16,12 +16,13 @@ from model import GPLVM, LatentVariable, VariationalELBO, BatchIdx, _KL, PointLa
 from utils.preprocessing import setup_from_anndata
 from gpytorch.likelihoods import GaussianLikelihood
 
-from model import ScalyEncoder, NNEncoder, NBLikelihood 
+from model import ScalyEncoder, NNEncoder, NBLikelihood, VariationalLatentVariable
+from model import ccScalyEncoder, ccNNEncoder, ccVariationalLatentVariable
 
 import argparse
 
 ## define training functions
-def train(gplvm, likelihood, Y, learn_scale, encoder,
+def train(gplvm, likelihood, Y, learn_scale, args,
           seed, epochs=15, batch_size=300, lr=0.005):
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -44,23 +45,23 @@ def train(gplvm, likelihood, Y, learn_scale, encoder,
         Y_batch = Y[batch_index]
 
         if(learn_scale):
-          if(encoder == 'scaly'):
-            X_l, S_l = gplvm.X_latent(Y = Y_batch, X_covars = gplvm.X_covars[batch_index])
-          elif(encoder == 'scalynocovars'):
-            X_l, S_l = gplvm.X_latent(Y = Y_batch, X_covars = None)
+          if(args.encoder == 'scaly'):
+            X_l, S_l = gplvm.X_latent(Y = Y_batch, X_covars = gplvm.X_covars[batch_index], batch_index = batch_index)
+          elif(args.encoder == 'scalynocovars'):
+            X_l, S_l = gplvm.X_latent(Y = Y_batch, X_covars = None, batch_index = batch_index)
           else:
-            raise ValueError(f'Invalid input argument: {encoder} given learn_scale. Please choose a variation of scalyencoder.')
+            raise ValueError(f'Invalid input argument: {args.encoder} given learn_scale. Please choose a variation of scalyencoder.')
         else:
-          if(encoder == 'point'):
+          if(args.encoder == 'point' or args.encoder == 'vpoint'):
             X_l = gplvm.X_latent(batch_index = batch_index)
-          elif(encoder == 'nnenc'):
-            X_l = gplvm.X_latent(Y = Y_batch)
-          elif(encoder == 'scalynocovars'):
-            X_l = gplvm.X_latent(Y = Y_batch, X_covars = None)
-          elif(encoder == 'scaly'):
-            X_l = gplvm.X_latent(Y = Y_batch, X_covars = gplvm.X_covars[batch_index]) 
+          elif(args.encoder == 'nnenc'):
+            X_l = gplvm.X_latent(Y = Y_batch, batch_index = batch_index)
+          elif(args.encoder == 'scalynocovars'):
+            X_l = gplvm.X_latent(Y = Y_batch, X_covars = None, batch_index = batch_index)
+          elif(args.encoder == 'scaly'):
+            X_l = gplvm.X_latent(Y = Y_batch, X_covars = gplvm.X_covars[batch_index], batch_index = batch_index) 
           else:
-            raise ValueError(f'Invalid input argument: {encoder}')
+            raise ValueError(f"Invalid input argument: {args.encoder}")
         X_sample = torch.cat((X_l, gplvm.X_covars[batch_index]), axis=1)
         gplvm_dist = gplvm(X_sample)
         if(learn_scale):
@@ -75,12 +76,15 @@ def train(gplvm, likelihood, Y, learn_scale, encoder,
         iterator.set_description(iter_descrip)
         loss.backward()
         optimizer.step()
+        if('periodic' in args.likelihood):
+          gplvm.X_latent.cc_latent.data.clamp_(0., 2*np.pi) # keep cell-cycle between 0 and 2pi
 
     return losses
 
 def main(args):
   print(args)
-  plt.ion(); plt.style.use('seaborn-pastel')
+  # plt.ion();
+  plt.style.use('seaborn-pastel')
   device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
   model_dir = f'{args.model_dir}/{args.data}/seed{args.seed}'
   model_name = f'{args.model}_{args.preprocessing}_{args.encoder}_{args.kernel}_{args.likelihood}'
@@ -198,27 +202,52 @@ def main(args):
 
   q = 10
   (n, d)= Y.shape
-  period_scale = np.Inf # no period/cell-cycle shenanigans
 
   if('learnscale' in args.likelihood):
     learn_scale = True
   else:
     learn_scale = False
+  
   if('learntheta' in args.likelihood):
     learn_theta = True
   else:
     learn_theta = False
+  
+  if('periodic' in args.kernel):
+    if(args.data == 'covid_data'):
+      cc_init = torch.tensor(adata.obs['cell_cycle_init'].values.reshape([n,1])).float()
+    else:
+      raise ValueError(f'Periodic kernel with cell_cycle info only with covid_data right now.')
 
   ## Declare encoder ##
+  # if periodic, initialize with cc_init with point latent variable #
   if(args.encoder == 'point'):
-    X_latent_init = torch.tensor(adata.obsm['X_pca'][:, 0:q]) # check if this is what we want it to be for covid dataa
-    X_latent = PointLatentVariable(X_latent_init)
+    X_latent_init = torch.tensor(adata.obsm['X_pca'][:, 0:q]) # check if this is what we want it to be for covid data
+    if('periodic' in args.kernel):
+      X_latent = PointLatentVariable(torch.cat([cc_init, X_latent_init], axis =1))
+    else:                     
+      X_latent = PointLatentVariable(X_latent_init)
+  elif(args.encoder == 'vpoint'):
+    X_latent_init = torch.tensor(adata.obsm['X_pca'][:, 0:q])
+    if('periodic' in args.kernel):
+      X_latent = ccVariationalLatentVariable(X_latent_init, Y.shape[1], cc_init = cc_init)
+    else:
+      X_latent = VariationalLatentVariable(X_latent_init, Y.shape[1])
   elif(args.encoder == 'nnenc'): 
-    X_latent = NNEncoder(n, q, d, (128, 128))
+    if('periodic' in args.kernel):
+       X_latent = ccNNEncoder(n, q, d, (128, 128), cc_init = cc_init)
+    else:
+      X_latent = NNEncoder(n, q, d, (128, 128))
   elif(args.encoder == 'scaly'):
-    X_latent = ScalyEncoder(q, d + X_covars.shape[1], learn_scale = learn_scale, Y= Y)
+    if('periodic' in args.kernel):
+      X_latent = ccScalyEncoder(q, d + X_covars.shape[1], learn_scale = learn_scale, Y= Y, cc_init = cc_init)
+    else:
+      X_latent = ScalyEncoder(q, d + X_covars.shape[1], learn_scale = learn_scale, Y= Y)
   else: #('scalynocovars')
-    X_latent = ScalyEncoder(q, d , learn_scale = learn_scale, Y= Y)
+    if('periodic' in args.kernel):
+      X_latent = ccScalyEncoder(q, d , learn_scale = learn_scale, Y= Y, cc_init = cc_init)
+    else:
+      X_latent = ScalyEncoder(q, d , learn_scale = learn_scale, Y= Y)
   print(f'Using encoder:\n{X_latent}\n')
   
   ## Declare GPLVM model ##
@@ -240,13 +269,14 @@ def main(args):
               period_scale=period_scale,
               X_latent=X_latent,
               X_covars=X_covars,
-              pseudotime_dim = pseudotime_dim
+              pseudotime_dim = pseudotime_dim,
               learn_inducing_locations = learn_inducing_locations
              )
-  gplvm.intercept = gpytorch.means.ConstantMean()
-  gplvm.random_effect_mean = gpytorch.means.ZeroMean()
+  # gplvm.intercept = gpytorch.means.ConstantMean()
   if('linear_' in args.kernel):
     gplvm.covar_module = gpytorch.kernels.LinearKernel(q + len(X_covars.T))
+    gplvm.random_effect_mean = gpytorch.means.ZeroMean()
+
   print(f'Using GPLVM:\n{gplvm}\n')
   
   ## Declare Likelihood ##
@@ -255,7 +285,6 @@ def main(args):
   else: # nblikelihood
     likelihood = NBLikelihood(d, learn_scale = learn_scale, learn_theta = learn_theta)
   print(f'Using likelihood:\n\t{likelihood}')
-  
   
   ## Train the Model ##
   val_split = 0
@@ -292,7 +321,7 @@ def main(args):
     likelihood = likelihood.cuda()
     gplvm.X_latent = gplvm.X_latent.cuda()
     
-  losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y, encoder = args.encoder,
+  losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y, args =args,
                seed = config['seed'], learn_scale = config['learn_scale'], 
                 lr=config['learning_rate'], epochs=config['epochs'], batch_size=config['batch_size']) 
 
@@ -300,7 +329,7 @@ def main(args):
   torch.save(likelihood.state_dict(), f'{model_dir}/{model_name}_likelihood_state_dict.pt')
   torch.save(gplvm.state_dict(), f'{model_dir}/{model_name}_gplvm_state_dict.pt')
   plt.plot(losses)
-  plt.savefig(losses, f"{model_dir}/{model_name}_losses.png")
+  plt.savefig(f"{model_dir}/{model_name}_losses.png")
 
   wandb.finish()
   print('Done.')
@@ -322,7 +351,7 @@ if __name__ == "__main__":
                         'libnormlogtranscolumnstd'])
     parser.add_argument('-e', '--encoder', type = str, help='type of encoder',
     					default = 'scaly',
-    					choices = ['point', 'nnenc', 'scaly', 'scalynocovars']) 
+    					choices = ['point', 'vpoint', 'nnenc', 'scaly', 'scalynocovars']) 
     parser.add_argument('-k', '--kernel', type = str, help = 'type of kernel',
     					default = 'linear_linear',
     					choices = ['linear_linear', 

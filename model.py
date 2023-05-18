@@ -23,21 +23,6 @@ from gpytorch.kernels import ScaleKernel, LinearKernel, RBFKernel, \
 
 softplus = torch.nn.Softplus()
 
-
-class LatentVariable(gpytorch.Module):
-    pass
-
-
-class PointLatentVariable(LatentVariable):
-    def __init__(self, X_init):
-        super().__init__()
-        self.register_parameter('X', torch.torch.nn.Parameter(X_init))
-
-    def forward(self, batch_index=None, Y=None):
-        return self.X[batch_index, :] if batch_index is not None \
-               else self.X
-
-
 class GPLVM(ApproximateGP):
     def __init__(self, n, data_dim, latent_dim, covariate_dim,
                  pseudotime_dim=True, n_inducing=60, period_scale=2*np.pi,
@@ -60,8 +45,7 @@ class GPLVM(ApproximateGP):
         q_u = CholeskyVariationalDistribution(n_inducing,
                                               batch_shape=self.batch_shape)
         q_f = VariationalStrategy(self, self.inducing_inputs,
-                                  q_u, learn_inducing_locations=learn_inducing_locations) # changed inducing location to True
-
+                                  q_u, learn_inducing_locations=learn_inducing_locations)
         super(GPLVM, self).__init__(q_f)
 
         self._init_gp_mean(covariate_dim)
@@ -189,6 +173,65 @@ def train(gplvm, likelihood, Y, epochs=100, batch_size=100, lr=0.005):
 
     return losses
 
+class LatentVariable(gpytorch.Module):
+    pass
+
+
+class PointLatentVariable(LatentVariable):
+    def __init__(self, X_init):
+        super().__init__()
+        self.register_parameter('X', torch.torch.nn.Parameter(X_init)) # check this code
+
+    def forward(self, batch_index=None, Y=None):
+        return self.X[batch_index, :] if batch_index is not None \
+               else self.X
+
+class VariationalLatentVariable(LatentVariable):
+    def __init__(self, X_init, data_dim):
+        n, latent_dim = X_init.shape
+        super().__init__()
+        
+        self.n = n
+        self.data_dim = data_dim
+        self.latent_dim = latent_dim
+        
+        self.prior_x = NormalPrior(
+            torch.zeros(1, latent_dim),
+            torch.ones(1, latent_dim)
+        )
+        
+        # Local variational params per latent point with dimensionality latent_dim
+        self.q_mu = torch.nn.Parameter(X_init)
+        self.q_log_sigma = torch.nn.Parameter(torch.randn(n, latent_dim))     
+
+        self.register_added_loss_term("x_kl")
+
+    def forward(self, batch_index=None):
+        
+        if batch_index is None:
+            batch_index = np.arange(self.n) 
+        
+        q_mu_batch = self.q_mu[batch_index, ...]
+        q_log_sigma_batch = self.q_log_sigma[batch_index, ...]
+
+        q_x = Normal(q_mu_batch, q_log_sigma_batch.exp())
+        
+        x_kl = _KL(q_x, self.prior_x, len(batch_index), self.data_dim)        
+        self.update_added_loss_term('x_kl', x_kl)
+        
+        return q_x.rsample()
+
+class ccVariationalLatentVariable(VariationalLatentVariable):
+    def __init__(self, X_init, data_dim, cc_init = None):
+        super().__init__( X_init, data_dim)
+        self.cc_init = cc_init
+        self.cc_latent = torch.nn.Parameter(cc_init)
+        
+    def forward(self, batch_index = None): 
+        q_xsample = super().forward(batch_index)
+        # cc_kl = (kappa_q)/(q_xsample.shape[0]*self.data_dim) <- vonmises doesn't have an rsample
+        return torch.cat([self.cc_latent[batch_index,:], q_xsample], axis = 1)
+
 class NNEncoder(LatentVariable):    
     def __init__(self, n, latent_dim, data_dim, layers):
         super().__init__()
@@ -198,13 +241,12 @@ class NNEncoder(LatentVariable):
             torch.zeros(1, latent_dim),
             torch.ones(1, latent_dim))
         self.data_dim = data_dim
-        self.latent_dim = latent_dim
 
         self._init_nnet(layers)
         self.register_added_loss_term("x_kl")
 
         self.jitter = torch.eye(latent_dim).unsqueeze(0)*1e-5
-
+        
     def _init_nnet(self, hidden_layers):
         layers = (self.data_dim,) + hidden_layers + (self.latent_dim*2,)
         n_layers = len(layers)
@@ -216,7 +258,7 @@ class NNEncoder(LatentVariable):
 
         self.nnet = torch.nn.Sequential(*modules)
 
-    def forward(self, Y=None):
+    def forward(self, batch_index = None, Y=None):
         h = self.nnet(Y)
         mu = h[..., :self.latent_dim].tanh()*5
         sg = softplus(h[..., self.latent_dim:]) + 1e-6
@@ -226,6 +268,22 @@ class NNEncoder(LatentVariable):
         x_kl = _KL(q_x, self.prior_x, len(mu), self.data_dim)
         self.update_added_loss_term('x_kl', x_kl)
         return q_x.rsample()
+
+class ccNNEncoder(NNEncoder):
+    def __init__(self, n, latent_dim, data_dim, layers, cc_init=None):
+        super().__init__(n, latent_dim, data_dim, layers)
+        self.cc_init = cc_init
+        self.cc_latent = torch.nn.Parameter(cc_init)
+
+        
+    def forward(self, Y=None, batch_index = None): 
+        q_xsample = super().forward(Y=Y)
+        print(q_xsample.shape)
+        print(torch.cat([self.cc_latent[batch_index,:], q_xsample], axis = 1).shape)
+        print(Y.shape)
+        print(batch_index.shape)
+        # cc_kl = (kappa_q)/(q_xsample.shape[0]*self.data_dim) <- vonmises doesn't have an rsample
+        return torch.cat([self.cc_latent[batch_index,:], q_xsample], axis = 1)
 
 class ScalyEncoder(LatentVariable):
     """ KL added for both q_x and q_l"""
@@ -267,7 +325,7 @@ class ScalyEncoder(LatentVariable):
                 torch.nn.Linear(128, 1*2),
             )
 
-    def forward(self, Y=None, X_covars=None):
+    def forward(self, Y=None, X_covars=None, batch_index = None):
         if(X_covars is not None):
             z_params = self.z_nnet(torch.cat([Y, X_covars], axis=1))
         else:
@@ -307,6 +365,20 @@ class ScalyEncoder(LatentVariable):
         if(self.learn_scale):
             return q_x.rsample(), q_l.rsample()
         return q_x.rsample()
+
+class ccScalyEncoder(ScalyEncoder):
+    def __init__(self, latent_dim, input_dim, learn_scale, Y, cc_init=None):
+        super().__init__(latent_dim, input_dim, learn_scale, Y )
+        self.cc_init = cc_init
+        self.cc_latent = torch.nn.Parameter(cc_init)
+        
+    def forward(self, Y=None, X_covars = None, batch_index = None): 
+        if(self.learn_scale):
+            q_xsample, q_lsample = super().forward(Y=Y, X_covars = X_covars)
+            return torch.cat([self.cc_latent[batch_index,:], q_xsample], axis =1), q_lsample
+        q_xsample= super().forward(Y=Y, X_covars = X_covars)
+        return torch.cat([self.cc_latent[batch_index,:], q_xsample], axis =1)
+    
 
 # class NNEncoder(LatentVariable):    
 #     def __init__(self, n, latent_dim, data_dim, layers):

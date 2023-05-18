@@ -19,13 +19,15 @@ from gpytorch.priors import NormalPrior
 from torch.distributions import LogNormal
 
 from utils.metrics import calc_bio_metrics, calc_batch_metrics
-from model import ScalyEncoder, NNEncoder, NBLikelihood 
+from model import ScalyEncoder, NNEncoder, NBLikelihood, VariationalLatentVariable
+from model import ccScalyEncoder, ccNNEncoder, ccVariationalLatentVariable
 
 import argparse
 
 def main(args):
   print(args)
-  plt.ion(); plt.style.use('seaborn-pastel')
+  # plt.ion(); 
+  plt.style.use('seaborn-pastel')
   device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
   model_dir = f'{args.model_dir}/{args.data}/seed{args.seed}'
   model_name = f'{args.model}_{args.preprocessing}_{args.encoder}_{args.kernel}_{args.likelihood}'
@@ -69,8 +71,6 @@ def main(args):
   else: #innate_immunity
     pass #TODO: add in the data loading here
   print(f'Done loading in  {args.data}\n')
-  
-  # TODO: add functionality for scvi and linearscvi
   
   # set seeds
   torch.manual_seed(args.seed)
@@ -132,7 +132,6 @@ def main(args):
     print('Done.')  
     return
   
-  
   # data preprocessing
   print('Starting Data Preprocessing:')
   Y_temp = Y_rawcounts
@@ -150,45 +149,80 @@ def main(args):
 
   q = 10
   (n, d)= Y.shape
-  period_scale = np.Inf # no period/cell-cycle shenanigans
 
   if('learnscale' in args.likelihood):
     learn_scale = True
   else:
     learn_scale = False
+    
   if('learntheta' in args.likelihood):
     learn_theta = True
   else:
     learn_theta = False
+    
+  if('periodic' in args.kernel):
+    if(args.data == 'covid_data'):
+      cc_init = torch.tensor(adata.obs['cell_cycle_init'].values.reshape([n,1])).float()
+    else:
+      raise ValueError(f'Periodic kernel with cell_cycle info only with covid_data right now.')    
 
   ## Declare encoder ##
   if(args.encoder == 'point'):
-    X_latent = PointLatentVariable(torch.randn(n, q))
+    X_latent_init = torch.tensor(adata.obsm['X_pca'][:, 0:q]) # check if this is what we want it to be for covid data
+    if('periodic' in args.kernel):
+      X_latent = PointLatentVariable(torch.cat([cc_init, X_latent_init], axis =1))
+    else:                     
+      X_latent = PointLatentVariable(X_latent_init)
+  elif(args.encoder == 'vpoint'):
+    X_latent_init = torch.tensor(adata.obsm['X_pca'][:, 0:q])
+    if('periodic' in args.kernel):
+      X_latent = ccVariationalLatentVariable(X_latent_init, Y.shape[1], cc_init = cc_init)
+    else:
+      X_latent = VariationalLatentVariable(X_latent_init, Y.shape[1])
   elif(args.encoder == 'nnenc'): 
-    X_latent = NNEncoder(n, q, d, (128, 128))
+    if('periodic' in args.kernel):
+       X_latent = ccNNEncoder(n, q, d, (128, 128), cc_init = cc_init)
+    else:
+      X_latent = NNEncoder(n, q, d, (128, 128))
   elif(args.encoder == 'scaly'):
-    X_latent = ScalyEncoder(q, d + X_covars.shape[1], learn_scale = learn_scale, Y= Y)
+    if('periodic' in args.kernel):
+      X_latent = ccScalyEncoder(q, d + X_covars.shape[1], learn_scale = learn_scale, Y= Y, cc_init = cc_init)
+    else:
+      X_latent = ScalyEncoder(q, d + X_covars.shape[1], learn_scale = learn_scale, Y= Y)
   else: #('scalynocovars')
-    X_latent = ScalyEncoder(q, d , learn_scale = learn_scale, Y= Y)
+    if('periodic' in args.kernel):
+      X_latent = ccScalyEncoder(q, d , learn_scale = learn_scale, Y= Y, cc_init = cc_init)
+    else:
+      X_latent = ScalyEncoder(q, d , learn_scale = learn_scale, Y= Y)
   print(f'Using encoder:\n{X_latent}\n')
   
   ## Declare GPLVM model ##
   if('periodic' in args.kernel):
     period_scale = np.pi # stand-in rn
+    pseudotime_dim = True
   else:
     period_scale = np.Inf # no cc/pseudotime tracking
+    pseudotime_dim = False
+    
+  if('rbf' in args.kernel): # use fixed inducing locations for rbf
+    learn_inducing_locations = False
+  else:
+    learn_inducing_locations = True
+    
   gplvm = GPLVM(n, d, q,
               covariate_dim=len(X_covars.T),
               n_inducing=q + len(X_covars.T)+1,
               period_scale=period_scale,
               X_latent=X_latent,
               X_covars=X_covars,
-              pseudotime_dim=False
+              pseudotime_dim=pseudotime_dim,
+              learn_inducing_locations = learn_inducing_locations
              )
-  gplvm.intercept = gpytorch.means.ConstantMean()
-  gplvm.random_effect_mean = gpytorch.means.ZeroMean()
+  # gplvm.intercept = gpytorch.means.ConstantMean()
   if('linear_' in args.kernel):
     gplvm.covar_module = gpytorch.kernels.LinearKernel(q + len(X_covars.T))
+    gplvm.random_effect_mean = gpytorch.means.ZeroMean()
+    
   print(f'Using GPLVM:\n{gplvm}\n')
   
   ## Declare Likelihood ##
@@ -205,19 +239,36 @@ def main(args):
 
   if(args.encoder == 'point'):
     z_params = gplvm.X_latent.X
+  elif(args.encoder == 'vpoint'):
+    z_params = gplvm.X_latent.q_mu
   elif(args.encoder == 'scaly'):
     z_params = gplvm.X_latent.z_nnet(torch.cat([Y, X_covars], axis=1))
   elif(args.encoder == 'scalynocovars'):
     z_params = gplvm.X_latent.z_nnet(Y)
   else:
-    z_params = X_latent.nnet(Y)
+    z_params = X_latent.nnet(Y).tanh()*5
   
-  if(args.encoder == 'point'):
+  if(args.encoder == 'point' or args.encoder == 'vpoint'):
     X_latent_dims = z_params
   else:
     X_latent_dims = z_params[..., :X_latent.latent_dim]
-    
-  
+  # num_mc = 200
+  # print(f"Approximating latent dimension means with {num_mc} simuls..")
+  # Y_input = Y
+  # if(args.encoder == 'scaly'):
+  #   Y_input = torch.cat([Y, X_covars], axis=1)
+
+  # if('learnscale' in args.likelihood):
+  #   sample_f, sample_s = gplvm.X_latent(Y = Y_input)
+  #   X_latent_dims += sample_f * sample_s 
+  # else:
+  #   sample_x = gplvm.X_latent(Y = Y_input)
+  # for _ in range(num_mc-1):
+  #     sample_f, sample_s = gplvm.X_latent(Y = Y_input)
+  #     X_latent_dims += sample_f * sample_s
+  # X_latent_dims /= num_mc
+  # print("Done approximating in means.")
+
   adata.obsm[f'X_{model_name}_latent'] = X_latent_dims.detach().numpy()
 
   ## Calculating metrics ##
@@ -271,8 +322,8 @@ if __name__ == "__main__":
                         'logtranscolumnstd', 
                         'libnormlogtranscolumnstd'])
     parser.add_argument('-e', '--encoder', type = str, help='type of encoder',
-    					default = 'point',
-    					choices = ['point', 'nnenc', 'scaly', 'scalynocovars']) 
+    					default = 'scaly',
+    					choices = ['point', 'vpoint', 'nnenc', 'scaly', 'scalynocovars']) 
     parser.add_argument('-k', '--kernel', type = str, help = 'type of kernel',
     					default = 'linear_linear',
     					choices = ['linear_linear', 
@@ -280,7 +331,7 @@ if __name__ == "__main__":
                         'rbf_linear', 
                         'periodicrbf_linear'])
     parser.add_argument('-l', '--likelihood', type = str, help = 'likelihood used',
-    					default = 'nblikelihoodnoscalelearntheta',
+    					default = 'nblikelihoodlearnscalelearntheta',
     					choices = ['gaussianlikelihood', 
                         'nblikelihoodnoscalelearntheta', 
                         'nblikelihoodnoscalefixedtheta1',

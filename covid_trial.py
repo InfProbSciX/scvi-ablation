@@ -63,7 +63,7 @@ col_obs = ['harmonized_celltype', 'Site']
 sc.pl.embedding(adata, 'X_umap_scVI', color = col_obs, legend_loc='on data', size=5)
 
 #####################################################################
-# Linear GPLVM Run
+# GPLVM Run
 
 import gpytorch
 from model import GPLVM, LatentVariable, VariationalELBO, trange, BatchIdx
@@ -75,7 +75,10 @@ Y, X_covars = setup_from_anndata(adata,
                                  categorical_covariate_keys=['sample_id'], 
                                  continuous_covariate_keys=None,
                                  scale_gex=False)
-Y[Y > 100] = 100
+lib_size = 5000
+Y = lib_size * Y / Y.sum(axis=1)[:, None]
+
+# Y[Y > 100] = 100
 
 q = 10
 batch_size = 500 ## how much does the RAM allow here?
@@ -90,17 +93,14 @@ class NBLikelihood(gpytorch.likelihoods._OneDimensionalLikelihood):
         super().__init__()
         self.log_theta = torch.nn.Parameter(torch.ones(d))
 
-    def forward(self, function_samples, **kwargs):
-        scale = kwargs['scale'][:, 0]
-        fs = function_samples.softmax(dim=-1)
+    def forward(self, function_samples):
         return NegativeBinomial(
-            mu=scale * fs,
-            theta=self.log_theta.exp()[:, None],
-            scale=fs
+            mu=lib_size * function_samples.softmax(dim=-1),
+            theta=1e6
         )
 
-    def expected_log_prob(self, observations, function_dist, *args, **kwargs):
-        log_prob_lambda = lambda function_samples: self.forward(function_samples, **kwargs).log_prob(observations)
+    def expected_log_prob(self, observations, function_dist, *args):
+        log_prob_lambda = lambda function_samples: self.forward(function_samples).log_prob(observations)
         log_prob = self.quadrature(log_prob_lambda, function_dist)
         return log_prob
 
@@ -120,29 +120,14 @@ class ScalyEncoder(LatentVariable):
             torch.nn.Linear(128, latent_dim*2),
         )
 
-        self.l_nnet = torch.nn.Sequential(
-            torch.nn.Linear(input_dim, 128),
-            torch.nn.ReLU(),
-            torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001),
-            torch.nn.Linear(128, 128),
-            torch.nn.ReLU(),
-            torch.nn.BatchNorm1d(128, momentum=0.01, eps=0.001),
-            torch.nn.Linear(128, 1*2),
-        )
-
     def forward(self, Y=None, X_covars=None):
         z_params = self.z_nnet(torch.cat([Y, X_covars], axis=1))
-        l_params = self.l_nnet(torch.cat([Y, X_covars], axis=1))
 
         q_x = torch.distributions.Normal(
             z_params[..., :self.latent_dim],
             softplus(z_params[..., self.latent_dim:]) + 1e-4
         )
-        q_l = torch.distributions.LogNormal(
-            l_params[..., :1].tanh()*10,
-            l_params[..., 1:].sigmoid()*10 + 1e-4
-        )
-        return q_x.rsample(), q_l.rsample()
+        return q_x.rsample()
 
 def train(gplvm, likelihood, Y, epochs=100, batch_size=100, lr=0.01):
 
@@ -163,13 +148,14 @@ def train(gplvm, likelihood, Y, epochs=100, batch_size=100, lr=0.01):
         try:
             # ---------------------------------
             Y_batch = Y[batch_index]
-            X_l, S_l = gplvm.X_latent(Y_batch, gplvm.X_covars[batch_index])
+            X_l = gplvm.X_latent(Y_batch, gplvm.X_covars[batch_index])
             X_sample = torch.cat((X_l, gplvm.X_covars[batch_index]), axis=1)
             gplvm_dist = gplvm(X_sample)
-            loss = -elbo_func(gplvm_dist, Y_batch.T, scale=S_l).sum()
+            loss = -elbo_func(gplvm_dist, Y_batch.T).sum()
             # ---------------------------------
         except:
-            from IPython.core.debugger import set_trace; set_trace()
+            raise ValueError('xxx')
+            # from IPython.core.debugger import set_trace; set_trace()
         losses.append(loss.item())
         iterator.set_description(f'L:{np.round(loss.item(), 2)}')
         loss.backward()
@@ -189,10 +175,6 @@ gplvm = GPLVM(n, d, q,
               X_covars=X_covars,
               pseudotime_dim=False)
 
-gplvm.intercept = gpytorch.means.ConstantMean()
-gplvm.random_effect_mean = gpytorch.means.ZeroMean()
-gplvm.covar_module = gpytorch.kernels.LinearKernel(q + len(X_covars.T))
-
 likelihood = NBLikelihood(d)
 
 if torch.cuda.is_available():
@@ -202,16 +184,16 @@ if torch.cuda.is_available():
     likelihood = likelihood.cuda()
     gplvm.X_latent = gplvm.X_latent.cuda()
 
-losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y, lr=0.005, epochs=80, batch_size=250)
+losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y, lr=0.005, epochs=2, batch_size=50)
 
-# if os.path.exists('latent_sd.pth'):
+# if not os.path.exists('latent_sd.pth'):
 #     torch.save(gplvm.X_latent.state_dict(), 'latent_sd.pth')
 gplvm.X_latent.load_state_dict(torch.load('latent_sd.pth'))
 
 num_mc = 15
-X_latent_dims = gplvm.X_latent(Y, gplvm.X_covars)[0]
+X_latent_dims = gplvm.X_latent(Y, gplvm.X_covars)
 for _ in range(num_mc - 1):
-    X_latent_dims += gplvm.X_latent(Y, gplvm.X_covars)[0]
+    X_latent_dims += gplvm.X_latent(Y, gplvm.X_covars)
 X_latent_dims /= num_mc
 
 adata.obsm['X_BGPLVM_latent'] = X_latent_dims.detach().cpu()

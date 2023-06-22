@@ -22,6 +22,7 @@ from gpytorch.kernels import ScaleKernel, LinearKernel, RBFKernel, \
     PeriodicKernel
 
 softplus = torch.nn.Softplus()
+sigmoid = torch.nn.Sigmoid()
 
 class GPLVM(ApproximateGP):
     def __init__(self, n, data_dim, latent_dim, covariate_dim,
@@ -232,6 +233,42 @@ class ccVariationalLatentVariable(VariationalLatentVariable):
         # cc_kl = (kappa_q)/(q_xsample.shape[0]*self.data_dim) <- vonmises doesn't have an rsample
         return torch.cat([self.cc_latent[batch_index,:], q_xsample], axis = 1)
 
+class LinearEncoder(LatentVariable):
+    """ KL added for both q_x and q_l"""
+    def __init__(self, latent_dim, input_dim, Y, learn_scale = False): # n_layers, layer_type):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.input_dim = input_dim
+        self.learn_scale = learn_scale
+        
+        self.prior_x = NormalPrior(                 # prior for latent variable
+            torch.zeros(1, latent_dim),
+            torch.ones(1, latent_dim))
+
+        self.register_added_loss_term("x_kl")    # register added loss terms
+
+        self.z_nnet = torch.nn.Sequential(          # NN for latent variables
+            torch.nn.Linear(input_dim, latent_dim*2),
+        )
+
+    def forward(self, Y=None, X_covars=None, batch_index = None):
+        # Y and X_covars should correspond to the batch
+        if(X_covars is not None):
+            z_params = self.z_nnet(torch.cat([Y, X_covars], axis=1))
+        else:
+            z_params = self.z_nnet(Y)
+
+        q_x = torch.distributions.Normal(
+            z_params[..., :self.latent_dim].tanh()*10, 
+            softplus(z_params[..., self.latent_dim:]) + 1e-4
+        )
+
+        ## Adding KL(q|p) loss term 
+        x_kl = _KL(q_x, self.prior_x, Y.shape[0], self.input_dim)
+        self.update_added_loss_term('x_kl', x_kl)
+        
+        return q_x.rsample()    
+
 class NNEncoder(LatentVariable):    
     def __init__(self, n, latent_dim, data_dim, layers):
         super().__init__()
@@ -326,13 +363,14 @@ class ScalyEncoder(LatentVariable):
             )
 
     def forward(self, Y=None, X_covars=None, batch_index = None):
+        # Y and X_covars should correspond to the batch
         if(X_covars is not None):
             z_params = self.z_nnet(torch.cat([Y, X_covars], axis=1))
         else:
             z_params = self.z_nnet(Y)
 
         q_x = torch.distributions.Normal(
-            z_params[..., :self.latent_dim],
+            z_params[..., :self.latent_dim].tanh()*10,
             softplus(z_params[..., self.latent_dim:]) + 1e-4
         )
 
@@ -352,11 +390,11 @@ class ScalyEncoder(LatentVariable):
                 l_params[..., 1:].sigmoid()*10 + 1e-4
             )
             
-            row_sums = torch.sum(Y, dim=1)
+            row_sums = torch.log(torch.sum(Y, dim=1))
             
             empirical_total_mean = torch.mean(row_sums)
-            empirical_total_var = torch.std(row_sums)
-            self.prior_l = LogNormal(loc = empirical_total_mean, scale = empirical_total_var)
+            empirical_total_std = torch.std(row_sums)
+            self.prior_l = LogNormal(loc = empirical_total_mean, scale = empirical_total_std)
 
             ## Adding KL(q|p) loss term 
             l_kl = _KL(q_l, self.prior_l, Y.shape[0], self.input_dim)
@@ -430,25 +468,43 @@ class _KL(AddedLossTerm):
         kl_per_point = kl_per_latent_dim.sum()/self.n
         return (kl_per_point/self.d)
 
+# class BernoulliLikelihood(gpytorch.likelihoods._OneDimensionalLikelihood):  
+#     def forward(self, function_samples, **kwargs):
+#         # fs = function_samples
+#         # scale = 1 # fixed scale = 1
+#         fs = sigmoid(function_samples)
+        
+#         return NegativeBinomial(
+#             mu=scale * fs,
+#             theta = theta,
+#         )
+
+#     def expected_log_prob(self, observations, function_dist, *args, **kwargs):
+#         log_prob_lambda = lambda function_samples: self.forward(function_samples, **kwargs).log_prob(observations)
+#         log_prob = self.quadrature(log_prob_lambda, function_dist)
+#         return log_prob
+
 class NBLikelihood(gpytorch.likelihoods._OneDimensionalLikelihood):
-    def __init__(self, d, learn_scale, learn_theta):
+    def __init__(self, d, learn_scale, learn_theta, theta_val = 1):
         super().__init__()
         self.log_theta = torch.nn.Parameter(torch.ones(d)) # learned theta
         self.learn_scale = learn_scale
         self.learn_theta = learn_theta
+        self.theta_val = theta_val
 
     def forward(self, function_samples, **kwargs):
+        # fs = function_samples
+        # scale = 1 # fixed scale = 1
         fs = function_samples.softmax(dim=-1) 
-
         if(self.learn_scale):
-            scale = kwargs['scale'][:, 0] # set to S_l, learned scaling factor
+            scale = kwargs['scale'][:, 0] # set to S_l, learned scaling factor  
         else:
-            scale = 1 # fixed scale = 1
+            scale = 5000
 
         if(self.learn_theta):
             theta = self.log_theta.exp()[:, None] # learned theta
         else:
-            theta = 1
+            theta = self.theta_val
         
         return NegativeBinomial(
             mu=scale * fs,
@@ -459,5 +515,39 @@ class NBLikelihood(gpytorch.likelihoods._OneDimensionalLikelihood):
         log_prob_lambda = lambda function_samples: self.forward(function_samples, **kwargs).log_prob(observations)
         log_prob = self.quadrature(log_prob_lambda, function_dist)
         return log_prob
+
+# class NBLikelihoodwExp(gpytorch.likelihoods._OneDimensionalLikelihood):
+#     def __init__(self, d, learn_scale, learn_theta, theta_val = 1):
+#         super().__init__()
+#         self.log_theta = torch.nn.Parameter(torch.ones(d)) # learned theta
+#         self.learn_scale = learn_scale
+#         self.learn_theta = learn_theta
+#         self.theta_val = theta_val
+
+#     def forward(self, function_samples, **kwargs):
+#         # fs = function_samples
+#         # scale = 1 # fixed scale = 1
+#         if(self.learn_scale):
+#             fs = function_samples.softmax(dim=-1) 
+#             scale = kwargs['scale'][:, 0] # set to S_l, learned scaling factor  
+#         else:
+#             fs = functions_samples.exp()
+#             fs = fs/fs.sum(1, keepdim = True)
+#             scale = 1
+
+#         if(self.learn_theta):
+#             theta = self.log_theta.exp()[:, None] # learned theta
+#         else:
+#             theta = self.theta_val
+        
+#         return NegativeBinomial(
+#             mu=scale * fs,
+#             theta = theta,
+#         )
+
+#     def expected_log_prob(self, observations, function_dist, *args, **kwargs):
+#         log_prob_lambda = lambda function_samples: self.forward(function_samples, **kwargs).log_prob(observations)
+#         log_prob = self.quadrature(log_prob_lambda, function_dist)
+#         return log_prob
 
 __all__ = ['GPLVM', 'PointLatentVariable', 'NNEncoder', 'BatchIdx'] # 'train']

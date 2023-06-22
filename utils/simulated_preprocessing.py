@@ -5,10 +5,11 @@ import scanpy as sc
 import numpy as np
 
 data_dir = 'data/simulated_data'
-datasets = ['20k10k_seed1', '_seed1']
-names = ['balanced_large', 'balanced_small']
+datasets = ['_large_nodropout_seed1'] #'20k10k_seed1', '_seed1']
+names = ['nodropout_large'] #'balanced_large', 'balanced_small']
 
 for i in range(len(datasets)):
+  # import ipdb; ipdb.set_trace()
   count = pd.read_table(f'{data_dir}/counts{datasets[i]}.txt')
   cellinfo = pd.read_table(f'{data_dir}/cellinfo{datasets[i]}.txt')
   geneinfo = pd.read_table(f'{data_dir}/geneinfo{datasets[i]}.txt')

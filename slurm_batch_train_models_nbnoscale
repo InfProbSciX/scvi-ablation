@@ -1,0 +1,123 @@
+#!/bin/bash
+
+#!#############################################################
+
+#SBATCH -J nbnoscale
+#SBATCH -A COMPUTERLAB-SL2-GPU
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gres=gpu:3
+#SBATCH --time=12:00:00
+#SBATCH --mail-type=ALL
+#SBATCH -p ampere
+
+numnodes=$SLURM_JOB_NUM_NODES
+numtasks=$SLURM_NTASKS
+mpi_tasks_per_node=$(echo "$SLURM_TASKS_PER_NODE" | sed -e  's/^\([0-9][0-9]*\).*$/\1/')
+#! ############################################################
+DATA_FLAGS=('test_splatter_nb_large') #'test_covid_data'  'test_splatter_nb_large' ) #'test_covid_data') #  'test_covid_data'  'test_covid_data' 'splatter_nb_nodropout_large') #'test_covid_data' 'test_splatter_nb' 'test_splatter_nb_large') #'test_covid_data' 'splatter_nb' 'splatter_nb_large') 'covid_data' 
+MODEL_FLAG='gplvm'
+PREPROC_FLAG='libnorm' #'rawcounts' 
+ENCODER_FLAGS=('nnenc') # 'scaly' 'scalynocovars') #'linear1layer' 'linear1layernocovars') #'scalynocovars' 'scaly' ) # 'vpoint' 'nnenc'  'scalynocovars') #('scaly' 'scalynocovars') #('vpoint' 'nnenc')  #( 'scaly' 'scalynocovars') #('nnenc' 'scaly' 'scalynocovars') # ('vpoint' 'point') # 
+KERNEL_FLAGS=('rbf_linear') # 'rbf_linear') #rmean' #_linearmean'
+# LIKELIHOOD_FLAGS=('nblikelihoodnoscalefixedtheta1' 'nblikelihoodnoscale) #fixedtheta1') #fixedtheta1') #fixedtheta1') #'nblikelihoodnoscalefixedtheta1') #'nblikelihoodlearnscalefixedtheta1') # 'nblikelihoodnoscalelearntheta') # 'nblikelihoodnoscalefixedtheta1') #'nblikelihoodnoscalelearntheta') # 'nblikelihoodnoscalefixedtheta1') # 'nblikelihoodnoscalefixedtheta1' ) # 'nblikelihoodnoscalelearntheta' ) #  'nblikelihoodnoscalelearntheta''nblikelihoodnoscalefixedtheta1' 
+SEED_FLAGS=('123') # '0' '1' '2') #('42') # '0' '123')'42' '0'
+THETA_VAL=('1000000')
+# 
+source /home/smxz2/.bashrc # IMPORTANT: needed to ensure that conda works
+cd /rds/user/smxz2/hpc-work/scvi-ablation
+conda activate /home/smxz2/.conda/envs/gplvm
+
+application="/home/smxz2/.conda/envs/gplvm/bin/python"
+options_train="train_models.py -m ${MODEL_FLAG} -p ${PREPROC_FLAG}" # -k ${KERNEL_FLAG} "
+option_metrics="calc_metrics.py -m ${MODEL_FLAG} -p ${PREPROC_FLAG}" # -k ${KERNEL_FLAG}"
+workdir="/rds/user/smxz2/hpc-work/scvi-ablation"
+nexport OMP_NUM_THREADS=1
+np=$[${numnodes}*${mpi_tasks_per_node}]
+
+CMD=""
+for seed in "${SEED_FLAGS[@]}"
+do
+  for k_flag in "${KERNEL_FLAGS[@]}"
+  do
+    gpu_id=0
+    for e_flag in "${ENCODER_FLAGS[@]}"
+    do
+      for data in "${DATA_FLAGS[@]}"
+      do
+        if [[ "$data" == *"covid_data"* ]]; then #[ $data == 'test_covid_data' ]; then
+          CMD+="CUDA_VISIBLE_DEVICES=${gpu_id} $application $options_train -l nblikelihoodnoscalelearntheta -k ${k_flag} -e ${e_flag} -d ${data} -s ${seed} > ./models/${data}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${k_flag}_nblikelihoodnoscalelearntheta_output.txt & "
+          CMD+="CUDA_VISIBLE_DEVICES=${gpu_id} $application $options_train -l nblikelihoodnoscalefixedtheta1 -k ${k_flag} -e ${e_flag} -d ${data} -s ${seed} --theta_val $THETA_VAL > ./models/${data}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${k_flag}_nblikelihoodnoscalefixedtheta1_theta${THETA_VAL}_output.txt & "
+        elif [[ "$data" == *"splatter_nb_large"* ]]; then
+          # CMD+="CUDA_VISIBLE_DEVICES=${gpu_id} $application $options_train -l nblikelihoodnoscalelearntheta -k ${k_flag} -e ${e_flag} -d ${data} -s ${seed} --epochs 50 > ./models/${data}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${k_flag}_nblikelihoodnoscalelearntheta_output.txt & "
+          CMD+="CUDA_VISIBLE_DEVICES=${gpu_id} $application $options_train -l nblikelihoodnoscalefixedtheta1 -k ${k_flag} -e ${e_flag} -d ${data} -s ${seed} --epochs 50 --theta_val $THETA_VAL > ./models/${data}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${k_flag}_nblikelihoodnoscalefixedtheta1_theta${THETA_VAL}_output.txt & "
+          # CMD+="CUDA_VISIBLE_DEVICES=${gpu_id} $application $options_train -l ${l_flag} -e ${e_flag} -d ${data} -s ${seed} --epochs 50 > ./models/${data}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${KERNEL_FLAG}_${l_flag}_output.txt & "
+          # CMD+="CUDA_VISIBLE_DEVICES=${gpu_id} $application $options_train -l ${l_flag} -e ${e_flag} -d ${data} -s ${seed} --epochs 50  --theta_val $THETA_VAL > ./models/${data}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${KERNEL_FLAG}_${l_flag}_theta${THETA_VAL}_output.txt & "
+        elif [[ "$data" == *"splatter_nb_nodropout_large"* ]]; then
+          CMD+="CUDA_VISIBLE_DEVICES=${gpu_id} $application $options_train -l nblikelihoodnoscalelearntheta -k ${k_flag} -e ${e_flag} -d ${data} -s ${seed}--epochs 50  > ./models/${data}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${k_flag}_nblikelihoodnoscalelearntheta_output.txt & "
+          CMD+="CUDA_VISIBLE_DEVICES=${gpu_id} $application $options_train -l nblikelihoodnoscalefixedtheta1 -k ${k_flag} -e ${e_flag} -d ${data} -s ${seed} --epochs 50 --theta_val $THETA_VAL > ./models/${data}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${k_flag}_nblikelihoodnoscalefixedtheta1_theta${THETA_VAL}_output.txt & "
+          # CMD+="CUDA_VISIBLE_DEVICES=${gpu_id} $application $options_train -l ${l_flag} -e ${e_flag} -d ${data} -s ${seed} --epochs 50 > ./models/${data}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${KERNEL_FLAG}_${l_flag}_output.txt & "
+          # CMD+="CUDA_VISIBLE_DEVICES=${gpu_id} $application $options_train -l ${l_flag} -e ${e_flag} -d ${data} -s ${seed} --epochs 50  --theta_val $THETA_VAL > ./models/${data}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${KERNEL_FLAG}_${l_flag}_theta${THETA_VAL}_output.txt & "
+        else #nb_splattersmall
+          CMD+="CUDA_VISIBLE_DEVICES=${gpu_id} $application $options_train -l nblikelihoodnoscalelearntheta -k ${k_flag} -e ${e_flag} -d ${data} -s ${seed} --epochs 500 > ./models/${data}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${k_flag}_nblikelihoodnoscalelearntheta_output.txt & "
+          CMD+="CUDA_VISIBLE_DEVICES=${gpu_id} $application $options_train -l nblikelihoodnoscalefixedtheta1 -k ${k_flag} -e ${e_flag} -d ${data} -s ${seed} --epochs 500 --theta_val $THETA_VAL > ./models/${data}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${k_flag}_nblikelihoodnoscalefixedtheta1_theta${THETA_VAL}_output.txt & "
+          # CMD+="CUDA_VISIBLE_DEVICES=${gpu_id} $application $options_train -l ${l_flag} -e ${e_flag} -d ${data} -s ${seed} --epochs 500 > ./models/${data}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${KERNEL_FLAG}_${l_flag}_output.txt & "
+          # CMD+="CUDA_VISIBLE_DEVICES=${gpu_id} $application $options_train -l ${l_flag} -e ${e_flag} -d ${data}  -s ${seed}  --epochs 500  --theta_val $THETA_VAL > ./models/${data}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${KERNEL_FLAG}_${l_flag}_theta${THETA_VAL}_output.txt & "
+        fi
+      done
+      # CMD+="wait; "
+      gpu_id=$((gpu_id + 1))        
+    done
+    CMD+="wait; "
+  done
+done
+CMD+="wait; "
+# for seed in "${SEED_FLAGS[@]}"
+# do
+#   for l_flag in "${LIKELIHOOD_FLAGS[@]}"
+#   do
+#     for e_flag in "${ENCODER_FLAGS[@]}"
+#     do
+#       CMD+="$application $options_metrics -l ${l_flag} -e ${e_flag} -s ${seed} > ./models/${DATA_FLAG}/seed${seed}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${KERNEL_FLAG}_${l_flag}_metrics_output.txt & "
+#     done
+#     # CMD+="wait; "
+#   done
+# done
+# CMD+="wait; "
+
+# CMD=""
+# for l_flag in "${LIKELIHOOD_FLAGS[@]}"
+# do
+#   for e_flag in "${ENCODER_FLAGS[@]}"
+#   do
+#     CMD+="$application $options -e ${e_flag} -l ${l_flag} > ./models/${DATA_FLAG}/seed${SEED_FLAG}/${MODEL_FLAG}_${PREPROC_FLAG}_${e_flag}_${KERNEL_FLAG}_${l_flag}_output.txt & "
+#   done
+#   CMD+="wait; "
+# done
+
+###############################################################
+# # we don't change this stuff - this is from the template
+
+cd $workdir
+echo -e "Changed directory to `pwd`.\n"
+
+JOBID=$SLURM_JOB_ID
+
+echo -e "JobID: $JOBID\n======"
+echo "Time: `date`"
+echo "Running on master node: `hostname`"
+echo "Current directory: `pwd`"
+
+if [ "$SLURM_JOB_NODELIST" ]; then
+        #! Create a machine file:
+        export NODEFILE=`generate_pbs_nodefile`
+        cat $NODEFILE | uniq > machine.file.$JOBID
+        echo -e "\nNodes allocated:\n================"
+        echo `cat machine.file.$JOBID | sed -e 's/\..*$//g'`
+fi
+
+echo -e "\nnumtasks=$numtasks, numnodes=$numnodes, mpi_tasks_per_node=$mpi_tasks_per_node (OMP_NUM_THREADS=$OMP_NUM_THREADS)"
+
+echo -e "\nExecuting command:\n==================\n$CMD\n"
+
+eval $CMD

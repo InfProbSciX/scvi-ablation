@@ -5,145 +5,55 @@ import scanpy as sc
 import argparse
 
 import matplotlib.pyplot as plt
-# import wandb
+import wandb
 
 import scvi
-import os, sys
+import os
 
 import gpytorch
 from tqdm import trange
 from model import GPLVM, LatentVariable, VariationalELBO, BatchIdx, _KL, PointLatentVariable
 from utils.preprocessing import setup_from_anndata
-from gpytorch.likelihoods import GaussianLikelihood, BernoulliLikelihood
+from gpytorch.likelihoods import GaussianLikelihood
+from gpytorch.priors import NormalPrior
+from torch.distributions import LogNormal
 
-from model import ScalyEncoder, NNEncoder, NBLikelihood, VariationalLatentVariable, LinearEncoder
-from model import ccScalyEncoder, ccNNEncoder, ccVariationalLatentVariable #, NBLikelihoodwExp
+from utils.metrics import calc_bio_metrics, calc_batch_metrics
+from model import ScalyEncoder, NNEncoder, NBLikelihood, VariationalLatentVariable
+from model import ccScalyEncoder, ccNNEncoder, ccVariationalLatentVariable, LinearEncoder
 
 import argparse
 
-## define training functions
-def train(gplvm, likelihood, Y, learn_scale, args,
-          seed, epochs=15, batch_size=300, lr=0.005):
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-
-    n = len(Y)
-    steps = int(np.ceil(epochs*n/batch_size))
-    elbo_func = VariationalELBO(likelihood, gplvm, num_data=n)
-    optimizer = torch.optim.Adam([
-        dict(params=gplvm.parameters(), lr=lr),
-        dict(params=likelihood.parameters(), lr=lr)
-    ])
-
-    losses = []; idx = BatchIdx(n, batch_size).idx()
-    iterator = trange(steps, leave=False)
-    for i in iterator:
-        batch_index = next(idx)
-        optimizer.zero_grad()
-        
-        Y_batch = Y[batch_index]
-        try:
-          if(learn_scale):
-            if(args.encoder == 'scaly'):
-              X_l, S_l = gplvm.X_latent(Y = Y_batch, X_covars = gplvm.X_covars[batch_index], batch_index = batch_index)
-            elif(args.encoder == 'scalynocovars'):
-              X_l, S_l = gplvm.X_latent(Y = Y_batch, X_covars = None, batch_index = batch_index)
-            else:
-              raise ValueError(f'Invalid input argument: {args.encoder} given learn_scale. Please choose a variation of scalyencoder.')
-          else:
-            if(args.encoder == 'point' or args.encoder == 'vpoint'):
-              X_l = gplvm.X_latent(batch_index = batch_index)
-            elif(args.encoder == 'nnenc'):
-              X_l = gplvm.X_latent(Y = Y_batch, batch_index = batch_index)
-            elif(args.encoder == 'scalynocovars'):
-              X_l = gplvm.X_latent(Y = Y_batch, X_covars = None, batch_index = batch_index)
-            elif(args.encoder == 'scaly'):
-              X_l = gplvm.X_latent(Y = Y_batch, X_covars = gplvm.X_covars[batch_index], batch_index = batch_index) 
-            elif(args.encoder == 'linear1layernocovars'):
-              X_l = gplvm.X_latent(Y = Y_batch, X_covars = None, batch_index = batch_index)
-            elif(args.encoder == 'linear1layer'):
-              X_l = gplvm.X_latent(Y = Y_batch, X_covars = gplvm.X_covars[batch_index], batch_index = batch_index) 
-            else:
-              raise ValueError(f"Invalid input argument: {args.encoder}")
-          if('_linear' in args.kernel or  '_rbf' in args.kernel):
-            if(args.kernel == 'linear_linearmean'):
-              X_sample = X_l
-            else:
-              X_sample = torch.cat((X_l, gplvm.X_covars[batch_index]), axis=1)
-          else: 
-            X_sample = X_l
-          gplvm_dist = gplvm(X_sample)
-          if(learn_scale):
-              loss = -elbo_func(gplvm_dist, Y_batch.T, scale=S_l).sum()
-          else:
-              loss = -elbo_func(gplvm_dist, Y_batch.T).sum()                 # use this when scaling factor is not learned
-          # if(loss > 350e5):
-          #   import ipdb; ipdb.set_trace()
-        except:
-          import ipdb; ipdb.set_trace()
-          model_dir = f'{args.model_dir}/{args.data}/seed{args.seed}'
-          model_name = f'{args.model}_{args.preprocessing}_{args.encoder}_{args.kernel}_{args.likelihood}'
-          if(args.theta_val == 1):
-            filestuff = f'{model_dir}/{model_name}'
-          else:
-            filestuff = f'{model_dir}/{model_name}_theta{args.theta_val}' 
-          torch.save(losses, f'{filestuff}_losses_error.pt')
-          torch.save(likelihood.state_dict(), f'{filestuff}_likelihood_state_dict_error.pt')
-          torch.save(gplvm.state_dict(), f'{filestuff}_gplvm_state_dict_error.pt')
-          plt.plot(losses)
-          plt.savefig(f"{filestuff}_losses_error.png")
-        
-        losses.append(loss.item())
-        # wandb.log({'train loss': loss.item()})
-        iter_descrip = f'L:{np.round(loss.item(), 2)}'
-
-        iterator.set_description(iter_descrip)
-        loss.backward()
-        optimizer.step()
-        if('periodic' in args.likelihood):
-          gplvm.X_latent.cc_latent.data.clamp_(0., 2*np.pi) # keep cell-cycle between 0 and 2pi
-
-    return losses
-
 def main(args):
   print(args)
-  # plt.ion();
+  # plt.ion(); 
   plt.style.use('seaborn-pastel')
-  device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
   model_dir = f'{args.model_dir}/{args.data}/seed{args.seed}'
-  model_name = f'{args.model}_{args.preprocessing}_{args.encoder}_{args.kernel}_{args.likelihood}'
+  if(args.theta_val == 1):
+    model_name = f'{args.model}_{args.preprocessing}_{args.encoder}_{args.kernel}_{args.likelihood}'
+  else:
+    model_name = f'{args.model}_{args.preprocessing}_{args.encoder}_{args.kernel}_{args.likelihood}_theta{args.theta_val}'
   
   print(model_name)
-  print(f'using {device}')
-  
-  if not os.path.exists(model_dir):
-    print(f'{model_dir} does not exist')
-    os.makedirs(model_dir, exist_ok=True)
-    print(f'{model_dir} created.')
   
   if('noscale' in args.likelihood):
     if(args.preprocessing != 'libnorm'):
       raise ValueError('Please have libnorm preprocessing when using nblikelihood with noscale.')
-  
+
   
   # load in data
   print(f'Loading in data {args.data}')
   if('covid_data' in args.data):
     data_dir = "data/COVID_Stephenson/"
-    if(args.data == 'full_covid_data'):
-      adata = sc.read_h5ad(data_dir + 'Stephenson.wcellcycle.h5ad')
-      X_covars_keys = ['sample_id']
-    else:
-      adata = sc.read_h5ad(data_dir + "Stephenson.subsample.100k.h5ad")
-      X_covars_keys = ['sample_id']
+    adata = sc.read_h5ad(data_dir + "Stephenson.subsample.100k.h5ad")
+    X_covars_keys = ['sample_id']
 		# load in data
     Y_rawcounts, X_covars = setup_from_anndata(adata, 
                                  					layer='counts',
                                  					categorical_covariate_keys=X_covars_keys,
                                  					continuous_covariate_keys=None,
                                  					scale_gex=False)
-  elif(args.data == 'splatter_nb' or args.data == 'test_splatter_nb'):
+  elif(args.data  == 'splatter_nb' or args.data  == 'test_splatter_nb'):
     data_dir = 'data/simulated_data/'
     adata = sc.read_h5ad(data_dir + "balanced_small.h5ad")
     X_covars_keys = ['sample_id']
@@ -154,7 +64,7 @@ def main(args):
                                  					scale_gex=False)
     Y_rawcounts = Y_rawcounts.to(torch.float32)
     X_covars = X_covars.to(torch.float32)
-  elif(args.data == 'splatter_nb_large' or args.data == 'test_splatter_nb_large'):
+  elif(args.data == 'splatter_nb_large' or args.data  == 'test_splatter_nb_large'):
     data_dir = 'data/simulated_data/'
     adata = sc.read_h5ad(data_dir + "balanced_large.h5ad")
     X_covars_keys = ['sample_id']
@@ -164,7 +74,7 @@ def main(args):
                                  					continuous_covariate_keys=None,
                                  					scale_gex=False)
     Y_rawcounts = Y_rawcounts.to(torch.float32)
-    X_covars = X_covars.to(torch.float32)  
+    X_covars = X_covars.to(torch.float32)
   elif(args.data == 'splatter_nb_nodropout_large'):
     data_dir = 'data/simulated_data/'
     adata = sc.read_h5ad(data_dir + "nodropout_large.h5ad")
@@ -186,7 +96,7 @@ def main(args):
                                  					continuous_covariate_keys=None,
                                  					scale_gex=False)
     Y_rawcounts = Y_rawcounts.to(torch.float32)
-    X_covars = X_covars.to(torch.float32)  
+    X_covars = X_covars.to(torch.float32)
   else: #innate_immunity
     pass #TODO: add in the data loading here
   print(f'Done loading in  {args.data}\n')
@@ -196,65 +106,92 @@ def main(args):
   np.random.seed(args.seed)
   random.seed(args.seed) 
   
-  # if scvi:
-  if('scvi' in args.model):
-    arches_params = dict(
-      use_layer_norm="both",
-      use_batch_norm="none",
-      encode_covariates=True,
-      dropout_rate=0.2,
-      n_layers=2,
-      gene_likelihood = 'nb',
-    )
-
-    train_params = dict(
-      max_epochs=500, 
-      train_size = 1.0,
-      batch_size = 300,
-      plan_kwargs = {'lr': 0.005}, 
-    )
-    adata_ref = adata.copy()
+  # if model is pca
+  if(args.model == 'pca'):
+    model_name = 'pca'  
+    ## Generating UMAP ##
+    print('\nGenerating UMAP image...')
+    umap_seed = 1
+    torch.manual_seed(umap_seed)
+    np.random.seed(umap_seed)
+    random.seed(umap_seed) 
     
+    sc.pp.neighbors(adata, n_neighbors=50, use_rep='X_pca', key_added=f'X_{model_name}_k50')
+    sc.tl.umap(adata, neighbors_key=f'X_{model_name}_k50')
+    adata.obsm[f'umap_{args.data}_{model_name}_seed{args.seed}'] = adata.obsm['X_umap'].copy()
+    
+    if('covid_data' in args.data):
+      plt.rcParams['figure.figsize'] = [10,10]
+      col_obs = ['harmonized_celltype', 'Site']
+      sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
+                  save='_Site.png')
+  
+    plt.rcParams['figure.figsize'] = [10,10]
+    col_obs = ['harmonized_celltype', 'sample_id']
+    sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
+                  save='_sampleid.png')
+    print("Done.")
+    return
+    
+    
+  if('scvi' in args.model):
+    adata_ref = adata.copy()
     if(args.model == 'scvi'):
-      scvi.model.SCVI.setup_anndata(adata_ref, batch_key='sample_id', layer='counts')
-      scvi_ref = scvi.model.SCVI(adata_ref, **arches_params)
-      scvi_ref.train(**train_params)
-
-      scvi_ref.save(f'{model_dir}/nonlinearNBscVI/')
-      losses = scvi_ref.history['elbo_train']
-      torch.save(losses, f'{model_dir}/nonlinearNBscVI_losses.pt')
-      losses.plot()
-      plt.savefig(f"{model_dir}/nonlinearNBscVI_losses.png")
+      model_name = "nonlinearNBscVI"
+      scvi.model.SCVI.setup_anndata(adata_ref, batch_key='sample_id', layer='counts')      
+      scvi_ref = scvi.model.SCVI.load(f'{model_dir}/nonlinearNBscVI', adata_ref)
+      
+      adata_ref.obsm["X_scVI"] = scvi_ref.get_latent_representation()
+      adata.obsm["X_scVI"] = scvi_ref.get_latent_representation(adata_ref)
     elif(args.model == 'linear_scvi'):
+      model_name = "linearNBscVI"
       scvi.model.LinearSCVI.setup_anndata(adata_ref, batch_key='sample_id', layer='counts')
-      linearscvi = scvi.model.LinearSCVI(adata_ref, **arches_params)
-      linearscvi.train(**train_params)
-
-      linearscvi.save(f'{model_dir}/linearNBscVI/')
-      losses = linearscvi.history['elbo_train']
-      torch.save(losses, f'{model_dir}/linearNBscVI_losses.pt')
-      losses.plot()
-      plt.savefig(f"{model_dir}/linearNBscVI_losses.png")
+      linearscvi = scvi.model.LinearSCVI.load(f'{model_dir}/linearNBscVI', adata_ref)
+      
+      adata_ref.obsm["X_scVI"] = linearscvi.get_latent_representation()
+      adata.obsm["X_scVI"] = linearscvi.get_latent_representation(adata_ref)  
     else: 
       raise ValueError(f'Invalid input argument: {args.model} is not a valid scvi input.')
-    sys.exit()
+  
+    ## Generating UMAP ##
+    print('\nGenerating UMAP image...')
+    umap_seed = 1
+    torch.manual_seed(umap_seed)
+    np.random.seed(umap_seed)
+    random.seed(umap_seed) 
     
-  # if gplvm - then continue
+    sc.pp.neighbors(adata, n_neighbors=50, use_rep=f'X_scVI', key_added=f'X_{model_name}_k50')
+    sc.tl.umap(adata, neighbors_key=f'X_{model_name}_k50')
+    adata.obsm[f'umap_{args.data}_{model_name}_seed{args.seed}'] = adata.obsm['X_umap'].copy()
+
+    if('covid_data' in args.data):
+      plt.rcParams['figure.figsize'] = [10,10]
+      col_obs = ['harmonized_celltype', 'Site']
+      fig = sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_seed{args.seed}', color = col_obs, size = 10, wspace=1, legend_fontsize = 'xx-large', return_fig = True)
+      ax1 = fig.axes[0]; ax2 = fig.axes[1]     
+      ax1.set_xlabel('UMAP dimension 1', fontsize =35); ax2.set_xlabel('UMAP dimension 1', fontsize =35)
+      ax1.set_ylabel('UMAP dimension 2', fontsize = 35); ax2.set_ylabel('UMAP dimension 2', fontsize = 35)
+      ax1.set_title('Cell Type Clusters', fontsize = 40); ax2.set_title('Batch Clusters', fontsize=40)
+      plt.savefig(f'figures/umap_{args.data}_{model_name}_seed{args.seed}_Site.png')
+  
+    plt.rcParams['figure.figsize'] = [10,10]
+    col_obs = ['harmonized_celltype', 'sample_id']
+    fig = sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_seed{args.seed}', color = col_obs, size = 10,wspace=0.5, legend_fontsize = 'xx-large', return_fig = True)
+    ax1 = fig.axes[0]; ax2 = fig.axes[1]
+    ax1.set_xlabel('UMAP dimension 1', fontsize =35); ax2.set_xlabel('UMAP dimension 1', fontsize =35)
+    ax1.set_ylabel('UMAP dimension 2', fontsize = 35); ax2.set_ylabel('UMAP dimension 2', fontsize = 35)
+    ax1.set_title('Cell Type Clusters', fontsize = 40); ax2.set_title('Batch Clusters', fontsize=40)
+    plt.savefig(f'figures/umap_{args.data}_{model_name}_seed{args.seed}_sample_id.png')
+    
+    print('Done.')  
+    return
   
   # data preprocessing
   print('Starting Data Preprocessing:')
   Y_temp = Y_rawcounts
-  if('zeroone' in args.preprocessing):
-    print('\tZero-Oneing the data...')
-    Y_temp = torch.where(Y_temp > 0, torch.tensor(1), Y_temp)
-    
   if('libnorm' in args.preprocessing):
     print('\tLibrary normalizing...')
-    # Y_temp = Y_temp/Y_temp.sum(1, keepdim = True) * 10000
-    if('noscale' in args.likelihood):
-      Y_temp = Y_temp/Y_temp.sum(1, keepdim = True) * 5000
-    else:
-      Y_temp = Y_temp/Y_temp.sum(1, keepdim = True) * 10000
+    Y_temp = Y_temp/Y_temp.sum(1, keepdim = True) * 10000
   if('logtrans' in args.preprocessing):
     print('\tLog transforming...')
     Y_temp = torch.log(Y_temp + 1)
@@ -262,7 +199,6 @@ def main(args):
     print('\tColumn standardizing...')
     Y_temp = Y_temp / torch.std(Y_temp, axis = 0)
   Y = Y_temp
-  
   if(args.data == 'covid_data_X'):
     print('Using already built in preprocessed data...')
     Y = torch.tensor(adata.X.todense())
@@ -270,7 +206,6 @@ def main(args):
     Y_temp = torch.tensor(adata.X.todense())
     Y_temp = Y_temp / torch.std(Y_temp, axis = 0)
     Y = Y_temp
-    
   print('Done with data preprocessing!\n')
 
   q = 10
@@ -280,20 +215,19 @@ def main(args):
     learn_scale = True
   else:
     learn_scale = False
-  
+    
   if('learntheta' in args.likelihood):
     learn_theta = True
   else:
     learn_theta = False
-  
+    
   if('periodic' in args.kernel):
     if('covid_data' in args.data):
       cc_init = torch.tensor(adata.obs['cell_cycle_init'].values.reshape([n,1])).float()
     else:
-      raise ValueError(f'Periodic kernel with cell_cycle info only with covid_data right now.')
+      raise ValueError(f'Periodic kernel with cell_cycle info only with covid_data right now.')    
 
   ## Declare encoder ##
-  # if periodic, initialize with cc_init with point latent variable #
   if(args.encoder == 'point'):
     X_latent_init = torch.tensor(adata.obsm['X_pca'][:, 0:q]) # check if this is what we want it to be for covid data
     if('periodic' in args.kernel):
@@ -329,6 +263,7 @@ def main(args):
     raise ValueError(f"Invalid input argument: {args.encoder}")
   print(f'Using encoder:\n{X_latent}\n')
   
+  
   ## Declare GPLVM model ##
   if('periodic' in args.kernel): # add periodic kernel
     period_scale = np.pi 
@@ -355,18 +290,17 @@ def main(args):
               period_scale=period_scale,
               X_latent=X_latent,
               X_covars=X_covars,
-              pseudotime_dim = pseudotime_dim,
+              pseudotime_dim=pseudotime_dim,
               learn_inducing_locations = learn_inducing_locations
              )
   # gplvm.intercept = gpytorch.means.ConstantMean()
   if('linear_' in args.kernel):
     gplvm.random_effect_mean = gpytorch.means.ZeroMean()
     gplvm.covar_module = gpytorch.kernels.LinearKernel(n_inducing - 1) # q + len(X_covars.T)
-  
+    
   if(args.kernel == 'linear_linear_linearmean'):
-    gplvm.intercept = gpytorch.means.LinearMean(q + len(X_covars.T)) 
-    # gplvm.intercept = gpytorch.means.ConstantMean()
-    # gplvm.random_effect_mean = gpytorch.means.LinearMean(len(X_covars.T), bias = False) # gpytorch.means.LinearMean(len(X_covars.T))
+    gplvm.intercept = gpytorch.means.LinearMean(q+len(X_covars.T)) # the dimension of the latent space
+    # gplvm.random_effect_mean = gpytorch.means.LinearMean(len(X_covars.T))
     gplvm.covar_module = gpytorch.kernels.LinearKernel(q + len(X_covars.T))
   
   if(args.kernel == 'linear_linearmean'):
@@ -390,129 +324,145 @@ def main(args):
                 active_dims=gplvm.known_var_dims
             )
     gplvm.covar_module = latent_covarariance * random_effect_covariance
-
+    
   print(f'Using GPLVM:\n{gplvm}\n')
   
   ## Declare Likelihood ##
   if(args.likelihood == 'gaussianlikelihood'):
     likelihood = GaussianLikelihood(batch_shape=gplvm.batch_shape)
-  elif('wexp' in args.likelihood):
-    likelihood = NBLikelihoodwExp(d, learn_scale = learn_scale, learn_theta = learn_theta, theta_val = args.theta_val)
-  elif(args.likelihood == 'bernoulli'):
-    likelihood = BernoulliLikelihood()
   else: # nblikelihood
-    likelihood = NBLikelihood(d, learn_scale = learn_scale, learn_theta = learn_theta, theta_val = args.theta_val)
+    likelihood = NBLikelihood(d, learn_scale = learn_scale, learn_theta = learn_theta)
   print(f'Using likelihood:\n\t{likelihood}')
   
-  ## Train the Model ##
-  val_split = 0
-  
-  config = {
-    "learning_rate": args.learning_rate,
-    "epochs": args.epochs, 
-    "batch_size": args.batch_size,
-    'likelihood': likelihood,
-    'X_latent': gplvm.X_latent,
-    'n_inducing': q + len(X_covars.T) + 1,
-    'covariate_dim': len(X_covars.T),
-    'validation_split': val_split,
-    'eval_iter': 100,
-    'period_scale': period_scale,
-    'X_covars': X_covars,
-    'X_covar_keys': X_covars_keys,
-    'pseudotime_dim': False,
-    'seed': args.seed,
-    'elbo_func': f'VariationalELBO(likelihood, gplvm, num_data={n - int(np.floor(n*val_split))}), learning inducing loc',
-    'gplvm': gplvm,
-    'learn_scale': learn_scale,
-    'learn_theta': learn_theta,
-    'args': args
-  } 
-  
-  print('Initializing and training model...')
-  # wandb.init(project="scvi-ablation", entity="ml-at-cl", name = f'{args.data}_{model_name}', config = config)
+  ## Load in saved models ##
+  # if(args.theta_val == 1):
+  gplvm.load_state_dict(torch.load(f'{model_dir}/{model_name}_gplvm_state_dict.pt', map_location = torch.device('cpu')))
+  # else:
+    # gplvm.load_state_dict(torch.load(f'{model_dir}/{model_name}_theta{args.theta_val}_gplvm_state_dict.pt', map_location = torch.device('cpu')))
+  print('Loaded in saved model')
+  print(gplvm.eval())
 
-  if torch.cuda.is_available():
-    Y = Y.cuda()
-    gplvm = gplvm.cuda()
-    gplvm.X_covars = gplvm.X_covars.cuda()
-    likelihood = likelihood.cuda()
-    gplvm.X_latent = gplvm.X_latent.cuda()
-    
-  losses = train(gplvm=gplvm, likelihood=likelihood, Y=Y, args =args,
-               seed = config['seed'], learn_scale = config['learn_scale'], 
-                lr=config['learning_rate'], epochs=config['epochs'], batch_size=config['batch_size']) 
-
-  if(args.theta_val == 1):
-    filestuff = f'{model_dir}/{model_name}'
+  if(args.encoder == 'point'):
+    z_params = gplvm.X_latent.X
+  elif(args.encoder == 'vpoint'):
+    z_params = gplvm.X_latent.q_mu
+  elif(args.encoder == 'scaly' or args.encoder == 'linear1layer'):
+    z_params = gplvm.X_latent.z_nnet(torch.cat([Y, X_covars], axis=1))
+  elif(args.encoder == 'scalynocovars' or args.encoder == 'linear1layernocovars'):
+    z_params = gplvm.X_latent.z_nnet(Y)
   else:
-    filestuff = f'{model_dir}/{model_name}_theta{args.theta_val}' 
-  torch.save(losses, f'{filestuff}_losses.pt')
-  torch.save(likelihood.state_dict(), f'{filestuff}_likelihood_state_dict.pt')
-  torch.save(gplvm.state_dict(), f'{filestuff}_gplvm_state_dict.pt')
-  plt.plot(losses)
-  plt.savefig(f"{filestuff}_losses.png")
+    z_params = X_latent.nnet(Y).tanh()*5
+  
+  if(args.encoder == 'point' or args.encoder == 'vpoint'):
+    X_latent_dims = z_params
+  else:
+    X_latent_dims = z_params[..., :X_latent.latent_dim]
+  # num_mc = 200
+  # print(f"Approximating latent dimension means with {num_mc} simuls..")
+  # Y_input = Y
+  # if(args.encoder == 'scaly'):
+  #   Y_input = torch.cat([Y, X_covars], axis=1)
 
-  # wandb.finish()
+  # if('learnscale' in args.likelihood):
+  #   sample_f, sample_s = gplvm.X_latent(Y = Y_input)
+  #   X_latent_dims += sample_f * sample_s 
+  # else:
+  #   sample_x = gplvm.X_latent(Y = Y_input)
+  # for _ in range(num_mc-1):
+  #     sample_f, sample_s = gplvm.X_latent(Y = Y_input)
+  #     X_latent_dims += sample_f * sample_s
+  # X_latent_dims /= num_mc
+  # print("Done approximating in means.")
+
+  adata.obsm[f'X_{model_name}_latent'] = X_latent_dims.detach().numpy()
+
+  filestuff = f'{model_dir}/{model_name}'
+  model_name_stuff = model_name
+
+  ## Generating UMAP image ##
+  print('\nGenerating UMAP image...')
+  umap_seed = 1
+  torch.manual_seed(umap_seed)
+  np.random.seed(umap_seed)
+  random.seed(umap_seed) 
+  
+  sc.pp.neighbors(adata, n_neighbors=50, use_rep=f'X_{model_name}_latent', key_added=f'X_{model_name}_k50')
+  sc.tl.umap(adata, neighbors_key=f'X_{model_name}_k50')
+  adata.obsm[f'umap_{args.data}_{model_name_stuff}_seed{args.seed}'] = adata.obsm['X_umap'].copy()
+
+  if('covid_data' in args.data):
+    plt.rcParams['figure.figsize'] = [10,10]
+    col_obs = ['harmonized_celltype', 'Site']
+    fig = sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_seed{args.seed}', color = col_obs, size = 10, wspace=1, legend_fontsize = 'xx-large', return_fig = True)
+    ax1 = fig.axes[0]; ax2 = fig.axes[1]     
+    ax1.set_xlabel('UMAP dimension 1', fontsize =35); ax2.set_xlabel('UMAP dimension 1', fontsize =35)
+    ax1.set_ylabel('UMAP dimension 2', fontsize = 35); ax2.set_ylabel('UMAP dimension 2', fontsize = 35)
+    ax1.set_title('Cell Type Clusters', fontsize = 40); ax2.set_title('Batch Clusters', fontsize=40)
+    plt.savefig(f'figures/umap_{args.data}_{model_name}_seed{args.seed}_Site.png')
+  
+  plt.rcParams['figure.figsize'] = [10,10]
+  col_obs = ['harmonized_celltype', 'sample_id']
+  fig = sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_seed{args.seed}', color = col_obs, size = 10,wspace=0.5, legend_fontsize = 'xx-large', return_fig = True)
+  ax1 = fig.axes[0]; ax2 = fig.axes[1]
+  ax1.set_xlabel('UMAP dimension 1', fontsize =35); ax2.set_xlabel('UMAP dimension 1', fontsize =35)
+  ax1.set_ylabel('UMAP dimension 2', fontsize = 35); ax2.set_ylabel('UMAP dimension 2', fontsize = 35)
+  ax1.set_title('Cell Type Clusters', fontsize = 40); ax2.set_title('Batch Clusters', fontsize=40)
+  plt.savefig(f'figures/umap_{args.data}_{model_name}_seed{args.seed}_sample_id.png')
   print('Done.')
-
+  
+  
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Calculate metrics of specified train model on specified data")
     parser.add_argument('-m', '--model', type=str, help='overarching model', 
     					default = 'gplvm',
-              choices = ['scvi', 'linear_scvi', 'gplvm'])
+              choices = ['scvi', 'linear_scvi', 'gplvm', 'pca'])
     parser.add_argument('-d', '--data', type=str, help='Data your model was trained on', 
-              default = 'full_covid_data',
-    					choices = ['covid_data', 'covid_data_X', 'full_covid_data', 'innate_immunity', 
-                        'splatter_nb', 'splatter_nb_large', 'splatter_nb_nodropout_large',
-                        'test_gaussian',
-                        'test_covid_data', 'test_splatter_nb', 'test_splatter_nb_large'])
+              default = 'covid_data',
+    					choices = ['covid_data', 'covid_data_X', 'innate_immunity',
+                      'splatter_nb', 'splatter_nb_large', 'splatter_nb_nodropout_large',
+                      'test_gaussian', 
+                      'test_covid_data', 'test_splatter_nb', 'test_splatter_nb_large'])
     parser.add_argument('-p', '--preprocessing', type = str, help='preprocessing of raw counts',
-    					default = 'libnorm',
+    					default = 'rawcounts',
     					choices = ['rawcounts', 
                         'libnormlogtrans', 
                         'logtranscolumnstd', 
                         'libnormlogtranscolumnstd',
                         'libnorm',
-                        'columnstd',
-                        'zeroone'])
+                        'columnstd'])
     parser.add_argument('-e', '--encoder', type = str, help='type of encoder',
     					default = 'scaly',
     					choices = ['point', 'vpoint', 'nnenc', 'scaly', 'scalynocovars',
                         'linear1layer', 'linear1layernocovars']) 
     parser.add_argument('-k', '--kernel', type = str, help = 'type of kernel',
-    					default = 'rbf_linear',
+    					default = 'linear_linear',
     					choices = ['linear_linear', 
                         'periodic_linear', 
                         'rbf_linear', 
-                        'rbf_linear_linearmean', # this one doesn't make sense...
+                        'rbf_linear_linearmean',
                         'linear_linearmean',
                         'linear_linear_linearmean',
+                        'rbf_rbf',
                         'periodicrbf_linear',
                         'linear_',
-                        'rbf_',
-                        'rbf_rbf'])
+                        'rbf_'])
     parser.add_argument('-l', '--likelihood', type = str, help = 'likelihood used',
-    					default = 'nblikelihoodnoscalefixedtheta1',
+    					default = 'nblikelihoodlearnscalelearntheta',
     					choices = ['gaussianlikelihood', 
                         'nblikelihoodnoscalelearntheta', 
                         'nblikelihoodnoscalefixedtheta1',
                         'nblikelihoodlearnscalelearntheta', 
                         'nblikelihoodlearnscalefixedtheta1',
-                        'bernoulli'])
+                        ])
     parser.add_argument('-s', '--seed', type = int, help = 'random seed to initialize everything',
                         default = 42)
     parser.add_argument('--model_dir', type = str, help = 'Directory where all models are stored', 
                         default = 'models')
-    parser.add_argument('--epochs', type = int, help = 'number of epochs to run',
-                        default = 15)
+
+    parser.add_argument('--cluster_methods', type=str, nargs='+',help = 'List of cluster methods', default = ['kmeans', 'leiden'])
     parser.add_argument('--theta_val', type = float,
-                        default = 1000000)
-    parser.add_argument('--batch_size', type = int,
-                        default = 300)
-    parser.add_argument('--learning_rate', type = float,
-                        default = 0.005)
+                        default = 1)
     
     args = parser.parse_args()
 

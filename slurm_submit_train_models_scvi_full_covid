@@ -2,11 +2,11 @@
 
 #!#############################################################
 
-#SBATCH -J full_covid
+#SBATCH -J full_covid_scvi
 #SBATCH -A COMPUTERLAB-SL3-GPU
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:2
 #SBATCH --time=12:00:00
 #SBATCH --mail-type=ALL
 #SBATCH -p ampere
@@ -16,26 +16,31 @@ numtasks=$SLURM_NTASKS
 mpi_tasks_per_node=$(echo "$SLURM_TASKS_PER_NODE" | sed -e  's/^\([0-9][0-9]*\).*$/\1/')
 #! ############################################################
 DATA_FLAG='full_covid_data'
-MODEL_FLAG='gplvm'
-PREPROC_FLAG='libnorm' 
-ENCODER_FLAG='scaly' 
-KERNEL_FLAG='rbf_linear' 
-LIKELIHOOD_FLAG='nblikelihoodnoscalefixedtheta1'
+MODEL_FLAGS=('linear_scvi' 'scvi')
+PREPROC_FLAG='rawcounts'
+ENCODER_FLAG='scaly'
+KERNEL_FLAG='linear_linear'
+LIKELIHOOD_FLAG='nblikelihoodlearnscalelearntheta'
 SEED_FLAG='0'
-THETA_VAL='1000000'
 
 source /home/smxz2/.bashrc # IMPORTANT: needed to ensure that conda works
 cd /rds/user/smxz2/hpc-work/scvi-ablation
 conda activate /home/smxz2/.conda/envs/gplvm
 
 application="/home/smxz2/.conda/envs/gplvm/bin/python"
-options_train="train_models.py -m ${MODEL_FLAG} -k ${KERNEL_FLAG} -l ${LIKELIHOOD_FLAG} -p ${PREPROC_FLAG} -d ${DATA_FLAG} -e ${ENCODER_FLAG} -s ${SEED_FLAG}"
+options_train="train_models.py -p ${PREPROC_FLAG} -e ${ENCODER_FLAG} -k ${KERNEL_FLAG} -l ${LIKELIHOOD_FLAG} -d ${DATA_FLAG} -s ${SEED_FLAG} "
 workdir="/rds/user/smxz2/hpc-work/scvi-ablation"
 export OMP_NUM_THREADS=1
 np=$[${numnodes}*${mpi_tasks_per_node}]
 
-# CUDA_VISIBLE_DEVICES=${gpu_id} 
-CMD="$application $options_train --epochs 30 --theta_val $THETA_VAL > ./models/${DATA_FLAG}/seed${SEED_FLAG}/${MODEL_FLAG}_${PREPROC_FLAG}_${ENCODER_FLAG}_${KERNEL_FLAG}_${LIKELIHOOD_FLAG}_theta${THETA_VAL}_output.txt"
+CMD=""
+gpu_id=0
+for m_flag in "${MODEL_FLAGS[@]}"
+do
+        CMD+="CUDA_VISIBLE_DEVICES=${gpu_id} $application $options_train -m ${m_flag} > ./models/${DATA_FLAG}/seed${SEED_FLAG}/${m_flag}_${PREPROC_FLAG}_${ENCODER_FLAG}_${LIKELIHOOD_FLAG}_output.txt & "
+        gpu_id=$((gpu_id + 1))       
+done
+CMD+=" ; "
 
 echo -e $CMD
 

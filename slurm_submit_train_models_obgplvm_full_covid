@@ -2,7 +2,7 @@
 
 #!#############################################################
 
-#SBATCH -J full_covid
+#SBATCH -J full_covid_obgplvm
 #SBATCH -A COMPUTERLAB-SL3-GPU
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -17,12 +17,11 @@ mpi_tasks_per_node=$(echo "$SLURM_TASKS_PER_NODE" | sed -e  's/^\([0-9][0-9]*\).
 #! ############################################################
 DATA_FLAG='full_covid_data'
 MODEL_FLAG='gplvm'
-PREPROC_FLAG='libnorm' 
-ENCODER_FLAG='scaly' 
+PREPROC_FLAG='logtranscolumnstd' 
+ENCODER_FLAG='nnenc' 
 KERNEL_FLAG='rbf_linear' 
-LIKELIHOOD_FLAG='nblikelihoodnoscalefixedtheta1'
+LIKELIHOOD_FLAG='gaussianlikelihood'
 SEED_FLAG='0'
-THETA_VAL='1000000'
 
 source /home/smxz2/.bashrc # IMPORTANT: needed to ensure that conda works
 cd /rds/user/smxz2/hpc-work/scvi-ablation
@@ -35,7 +34,7 @@ export OMP_NUM_THREADS=1
 np=$[${numnodes}*${mpi_tasks_per_node}]
 
 # CUDA_VISIBLE_DEVICES=${gpu_id} 
-CMD="$application $options_train --epochs 30 --theta_val $THETA_VAL > ./models/${DATA_FLAG}/seed${SEED_FLAG}/${MODEL_FLAG}_${PREPROC_FLAG}_${ENCODER_FLAG}_${KERNEL_FLAG}_${LIKELIHOOD_FLAG}_theta${THETA_VAL}_output.txt"
+CMD="$application $options_train --epochs 30 > ./models/${DATA_FLAG}/seed${SEED_FLAG}/${MODEL_FLAG}_${PREPROC_FLAG}_${ENCODER_FLAG}_${KERNEL_FLAG}_${LIKELIHOOD_FLAG}_output.txt"
 
 echo -e $CMD
 

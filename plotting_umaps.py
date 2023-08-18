@@ -45,7 +45,10 @@ def main(args):
   print(f'Loading in data {args.data}')
   if('covid_data' in args.data):
     data_dir = "data/COVID_Stephenson/"
-    adata = sc.read_h5ad(data_dir + "Stephenson.subsample.100k.h5ad")
+    if(args.data == 'full_covid_data'):
+      adata = sc.read_h5ad(data_dir + 'Stephenson.wcellcycle.h5ad')
+    else:
+      adata = sc.read_h5ad(data_dir + "Stephenson.subsample.100k.h5ad")
     X_covars_keys = ['sample_id']
 		# load in data
     Y_rawcounts, X_covars = setup_from_anndata(adata, 
@@ -418,13 +421,13 @@ if __name__ == "__main__":
     					default = 'gplvm',
               choices = ['scvi', 'linear_scvi', 'gplvm', 'pca'])
     parser.add_argument('-d', '--data', type=str, help='Data your model was trained on', 
-              default = 'covid_data',
-    					choices = ['covid_data', 'covid_data_X', 'innate_immunity',
+              default = 'full_covid_data',
+    					choices = ['full_covid_data', 'covid_data', 'covid_data_X', 'innate_immunity',
                       'splatter_nb', 'splatter_nb_large', 'splatter_nb_nodropout_large',
                       'test_gaussian', 
                       'test_covid_data', 'test_splatter_nb', 'test_splatter_nb_large'])
     parser.add_argument('-p', '--preprocessing', type = str, help='preprocessing of raw counts',
-    					default = 'rawcounts',
+    					default = 'libnorm',
     					choices = ['rawcounts', 
                         'libnormlogtrans', 
                         'logtranscolumnstd', 
@@ -436,7 +439,7 @@ if __name__ == "__main__":
     					choices = ['point', 'vpoint', 'nnenc', 'scaly', 'scalynocovars',
                         'linear1layer', 'linear1layernocovars']) 
     parser.add_argument('-k', '--kernel', type = str, help = 'type of kernel',
-    					default = 'linear_linear',
+    					default = 'rbf_linear',
     					choices = ['linear_linear', 
                         'periodic_linear', 
                         'rbf_linear', 
@@ -448,7 +451,7 @@ if __name__ == "__main__":
                         'linear_',
                         'rbf_'])
     parser.add_argument('-l', '--likelihood', type = str, help = 'likelihood used',
-    					default = 'nblikelihoodlearnscalelearntheta',
+    					default = 'nblikelihoodnoscalefixedtheta1',
     					choices = ['gaussianlikelihood', 
                         'nblikelihoodnoscalelearntheta', 
                         'nblikelihoodnoscalefixedtheta1',

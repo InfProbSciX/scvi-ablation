@@ -46,8 +46,12 @@ def main(args):
   print(f'Loading in data {args.data}')
   if('covid_data' in args.data):
     data_dir = "data/COVID_Stephenson/"
-    adata = sc.read_h5ad(data_dir + "Stephenson.subsample.100k.h5ad")
-    X_covars_keys = ['sample_id']
+    if(args.data == 'full_covid_data'):
+      adata = sc.read_h5ad(data_dir + 'Stephenson.wcellcycle.h5ad')
+      X_covars_keys = ['sample_id']
+    else:
+      adata = sc.read_h5ad(data_dir + "Stephenson.subsample.100k.h5ad")
+      X_covars_keys = ['sample_id']
 		# load in data
     Y_rawcounts, X_covars = setup_from_anndata(adata, 
                                  					layer='counts',
@@ -410,7 +414,30 @@ def main(args):
   bio_metrics = calc_bio_metrics(adata, embed_key = f"X_{model_name}_latent",batch_key = 'sample_id', metrics_list = args.bio_metrics)
   torch.save(bio_metrics, f'{filestuff}_bio_metrics_by_sampleid_.pt')
 
-  ## Generating UMAP image ##
+  # ## Generating UMAP image ##
+  # print('\nGenerating UMAP image...')
+  # umap_seed = 1
+  # torch.manual_seed(umap_seed)
+  # np.random.seed(umap_seed)
+  # random.seed(umap_seed) 
+  
+  # sc.pp.neighbors(adata, n_neighbors=50, use_rep=f'X_{model_name}_latent', key_added=f'X_{model_name}_k50')
+  # sc.tl.umap(adata, neighbors_key=f'X_{model_name}_k50')
+  # adata.obsm[f'umap_{args.data}_{model_name_stuff}_seed{args.seed}'] = adata.obsm['X_umap'].copy()
+
+  # # if('covid_data' in args.data):
+  # #   plt.rcParams['figure.figsize'] = [10,10]
+  # #   col_obs = ['harmonized_celltype', 'Site']
+  # #   sc.pl.embedding(adata, f'umap_{args.data}_{model_name_stuff}_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
+  # #                 save='_Site.png')
+  
+  # # plt.rcParams['figure.figsize'] = [10,10]
+  # # col_obs = ['harmonized_celltype', 'sample_id']
+  # # sc.pl.embedding(adata, f'umap_{args.data}_{model_name_stuff}_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
+  # #                 save='_sampleid.png')
+  # print('Done.')
+    ## Generating UMAP image ##
+    
   print('\nGenerating UMAP image...')
   umap_seed = 1
   torch.manual_seed(umap_seed)
@@ -421,16 +448,24 @@ def main(args):
   sc.tl.umap(adata, neighbors_key=f'X_{model_name}_k50')
   adata.obsm[f'umap_{args.data}_{model_name_stuff}_seed{args.seed}'] = adata.obsm['X_umap'].copy()
 
-  # if('covid_data' in args.data):
-  #   plt.rcParams['figure.figsize'] = [10,10]
-  #   col_obs = ['harmonized_celltype', 'Site']
-  #   sc.pl.embedding(adata, f'umap_{args.data}_{model_name_stuff}_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
-  #                 save='_Site.png')
+  if('covid_data' in args.data):
+    plt.rcParams['figure.figsize'] = [10,10]
+    col_obs = ['harmonized_celltype', 'Site']
+    fig = sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_seed{args.seed}', color = col_obs, size = 10, wspace=1, legend_fontsize = 'xx-large', return_fig = True)
+    ax1 = fig.axes[0]; ax2 = fig.axes[1]     
+    ax1.set_xlabel('UMAP dimension 1', fontsize =35); ax2.set_xlabel('UMAP dimension 1', fontsize =35)
+    ax1.set_ylabel('UMAP dimension 2', fontsize = 35); ax2.set_ylabel('UMAP dimension 2', fontsize = 35)
+    ax1.set_title('Cell Type Clusters', fontsize = 40); ax2.set_title('Batch Clusters', fontsize=40)
+    plt.savefig(f'figures/umap_{args.data}_{model_name}_seed{args.seed}_Site.png')
   
-  # plt.rcParams['figure.figsize'] = [10,10]
-  # col_obs = ['harmonized_celltype', 'sample_id']
-  # sc.pl.embedding(adata, f'umap_{args.data}_{model_name_stuff}_seed{args.seed}', color = col_obs, legend_loc='on data', size=5,
-  #                 save='_sampleid.png')
+  plt.rcParams['figure.figsize'] = [10,10]
+  col_obs = ['harmonized_celltype', 'sample_id']
+  fig = sc.pl.embedding(adata, f'umap_{args.data}_{model_name}_seed{args.seed}', color = col_obs, size = 10,wspace=0.5, legend_fontsize = 'xx-large', return_fig = True)
+  ax1 = fig.axes[0]; ax2 = fig.axes[1]
+  ax1.set_xlabel('UMAP dimension 1', fontsize =35); ax2.set_xlabel('UMAP dimension 1', fontsize =35)
+  ax1.set_ylabel('UMAP dimension 2', fontsize = 35); ax2.set_ylabel('UMAP dimension 2', fontsize = 35)
+  ax1.set_title('Cell Type Clusters', fontsize = 40); ax2.set_title('Batch Clusters', fontsize=40)
+  plt.savefig(f'figures/umap_{args.data}_{model_name}_seed{args.seed}_sample_id.png')
   print('Done.')
   
   
@@ -441,13 +476,13 @@ if __name__ == "__main__":
     					default = 'gplvm',
               choices = ['scvi', 'linear_scvi', 'gplvm', 'pca'])
     parser.add_argument('-d', '--data', type=str, help='Data your model was trained on', 
-              default = 'covid_data',
-    					choices = ['covid_data', 'covid_data_X', 'innate_immunity',
+              default = 'full_covid_data',
+    					choices = ['full_covid_data', 'covid_data', 'covid_data_X', 'innate_immunity',
                       'splatter_nb', 'splatter_nb_large', 'splatter_nb_nodropout_large',
                       'test_gaussian', 
                       'test_covid_data', 'test_splatter_nb', 'test_splatter_nb_large'])
     parser.add_argument('-p', '--preprocessing', type = str, help='preprocessing of raw counts',
-    					default = 'rawcounts',
+    					default = 'libnorm',
     					choices = ['rawcounts', 
                         'libnormlogtrans', 
                         'logtranscolumnstd', 
@@ -460,7 +495,7 @@ if __name__ == "__main__":
     					choices = ['point', 'vpoint', 'nnenc', 'scaly', 'scalynocovars',
                         'linear1layer', 'linear1layernocovars']) 
     parser.add_argument('-k', '--kernel', type = str, help = 'type of kernel',
-    					default = 'linear_linear',
+    					default = 'rbf_linear',
     					choices = ['linear_linear', 
                         'periodic_linear', 
                         'rbf_linear', 
@@ -472,7 +507,7 @@ if __name__ == "__main__":
                         'linear_',
                         'rbf_'])
     parser.add_argument('-l', '--likelihood', type = str, help = 'likelihood used',
-    					default = 'nblikelihoodlearnscalelearntheta',
+    					default = 'nblikelihoodnoscalefixedtheta1',
     					choices = ['gaussianlikelihood', 
                         'nblikelihoodnoscalelearntheta', 
                         'nblikelihoodnoscalefixedtheta1',
